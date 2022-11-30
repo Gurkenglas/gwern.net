@@ -40,45 +40,41 @@ import Interwiki (convertInterwikiLinks)
 
 main :: IO ()
 main = do
-          md <- readLinkMetadata
-          -- build HTML fragments for each page or annotation link, containing just the list and no header/full-page wrapper, so they are nice to transclude *into* popups:
-          Par.mapM_ (writeLinkBibliographyFragment md) $ sort $ M.keys md
+  md <- readLinkMetadata
+  -- build HTML fragments for each page or annotation link, containing just the list and no header/full-page wrapper, so they are nice to transclude *into* popups:
+  Par.mapM_ (writeLinkBibliographyFragment md) $ M.toList md
 
 -- don't waste the user's time if the annotation is not heavily linked, as most are not, or if all the links are WP links:
 mininumLinkBibliographyFragment :: Int
 mininumLinkBibliographyFragment = 3
 
 writeLinkBibliographyFragment :: Metadata -> FilePath -> IO ()
-writeLinkBibliographyFragment md path =
-  case M.lookup path md of
-       Nothing -> return ()
-       Just (_,_,_,_,_,"") -> return ()
-       Just (_,_,_,_,_,abstract) -> do
-        let self = takeWhile (/='#') path
-            selfAbsolute = "https://www.gwern.net"++self
-        -- toggle between parsing the full original Markdown page, and just the annotation abstract:
-        linksRaw <- if head path == '/' && '.'`notElem`path then
-                      if '#' `elem` path && abstract=="" then return [] -- if it's just an empty annotation triggered by a section existing, ignore
-                      else
-                        extractLinksFromPage (tail (takeWhile (/='#') path) ++ ".page")
-                    else return $ map T.unpack $ extractLinks False (T.pack abstract)
-            -- delete self-links, such as in the ToC of scraped abstracts, or newsletters linking themselves as the first link (eg '/newsletter/2022/05' will link to 'https://www.gwern.net/newsletter/2022/05' at the beginning)
-        let links = filter (\l -> not (self `isPrefixOf` l || selfAbsolute `isPrefixOf` l)) linksRaw
-        when (length (filter (\l -> not ("https://en.wikipedia.org/wiki/" `isPrefixOf` l))  links) >= mininumLinkBibliographyFragment) $
-          do backlinks    <- mapM (fmap snd . getBackLinkCheck) links
-             similarlinks <- mapM (fmap snd . getSimilarLinkCheck) links
-             let pairs = linksToAnnotations md links
-                 pairs' = zipWith3 (\(a,b) c d -> (a,b,c,d)) pairs backlinks similarlinks
-                 body = [Para [Strong [Str "Link Bibliography"], Str ":"], generateLinkBibliographyItems pairs']
-                 document = Pandoc nullMeta body
-                 html = runPure $ writeHtml5String def{writerExtensions = pandocExtensions} $
-                   walk typographyTransform $ walk convertInterwikiLinks $ walk (hasAnnotation md) document
-             case html of
-               Left e   -> printRed (show e)
-               -- compare with the old version, and update if there are any differences:
-               Right p' -> do let (path',_) = getLinkBibLink path
-                              when (path' == "") $ error ("generateLinkBibliography.hs: writeLinkBibliographyFragment: writing out failed because received empty path' from getLinkBibLink for original path: " ++ path)
-                              writeUpdatedFile "link-bibliography-fragment" path' p'
+writeLinkBibliographyFragment _ (_, (_,_,_,_,_,"")) = return ()
+writeLinkBibliographyFragment md (path, (_,_,_,_,_,abstract)) = do
+  let self = takeWhile (/='#') path
+      selfAbsolute = "https://www.gwern.net"++self
+  -- toggle between parsing the full original Markdown page, and just the annotation abstract:
+  linksRaw <- if head self == '/' && '.'`notElem`path then
+                if '#' `elem` path && abstract=="" then return [] -- if it's just an empty annotation triggered by a section existing, ignore
+                else extractLinksFromPage (tail self ++ ".page")
+              else return $ map T.unpack $ extractLinks False (T.pack abstract)
+  -- delete self-links, such as in the ToC of scraped abstracts, or newsletters linking themselves as the first link (eg '/newsletter/2022/05' will link to 'https://www.gwern.net/newsletter/2022/05' at the beginning)
+  let links = filter (\l -> not (self `isPrefixOf` l || selfAbsolute `isPrefixOf` l)) linksRaw
+  when (length (filter (\l -> not ("https://en.wikipedia.org/wiki/" `isPrefixOf` l))  links) >= mininumLinkBibliographyFragment) $
+    do backlinks    <- mapM (fmap snd . getBackLinkCheck) links
+        similarlinks <- mapM (fmap snd . getSimilarLinkCheck) links
+        let annotations = map (\l -> M.lookupDefault ("","","","",[],"") l md) links
+            pairs' = zip4 links annotations backlinks similarlinks
+            body = [Para [Strong [Str "Link Bibliography"], Str ":"], generateLinkBibliographyItems pairs']
+            document = Pandoc nullMeta body
+            html = runPure $ writeHtml5String def{writerExtensions = pandocExtensions} $
+              walk typographyTransform $ walk convertInterwikiLinks $ walk (hasAnnotation md) document
+        case html of
+          Left e   -> printRed (show e)
+          -- compare with the old version, and update if there are any differences:
+          Right p' -> do let (path',_) = getLinkBibLink path
+                        when (path' == "") $ error ("generateLinkBibliography.hs: writeLinkBibliographyFragment: writing out failed because received empty path' from getLinkBibLink for original path: " ++ path)
+                        writeUpdatedFile "link-bibliography-fragment" path' p'
 
 generateLinkBibliographyItems :: [(String,MetadataItem,FilePath,FilePath)] -> Block
 generateLinkBibliographyItems [] = Para []
@@ -90,39 +86,22 @@ generateLinkBibliographyItem (f,(t,aut,_,_,_,""),_,_)  = -- short:
         | "index" `isSuffixOf` f = takeDirectory f
         | otherwise = takeFileName f
       authorShort = authorsTruncate aut
-      authorSpan  = if authorShort/=aut then Span ("",["full-authors-list"],[("title", T.pack aut)]) [Str (T.pack $ authorsTruncate aut)]
-                    else Str (T.pack authorShort)
+      authorSpan  = if authorShort/=aut then Span ("",["full-authors-list"],[("title", T.pack aut)]) . pure else id
       author = if aut=="" || aut=="N/A" then []
                else
-                 [Str ",", Space, authorSpan]
+                 [Str ",", Space, authorSpan (Str (T.pack authorShort))]
       -- I skip date because files don't usually have anything better than year, and that's already encoded in the filename which is shown
-  in
-    let linkAttr = if "https://en.wikipedia.org/wiki/" `isPrefixOf` f then ("",["include-annotation", "include-spinner-not"],[]) else nullAttr
-    in
-    if t=="" then
-      [Para (Link linkAttr [Code nullAttr (T.pack f')] (T.pack f, "") : author)]
-    else
-      [Para (Link linkAttr [Str "“", Str (T.pack $ titlecase t), Str "”"] (T.pack f, "") : author)]
+      linkAttr = if "https://en.wikipedia.org/wiki/" `isPrefixOf` f then ("",["include-annotation", "include-spinner-not"],[]) else nullAttr
+      title = if t=="" then [Code nullAttr (T.pack f')] else [Str "“", Str (T.pack $ titlecase t), Str "”"]
+  in [Para (Link linkAttr title (T.pack f, "") : author)]
 -- long items:
 generateLinkBibliographyItem (f,a,bl,sl) = generateAnnotationTransclusionBlock (f,a) bl sl ""
 
 extractLinksFromPage :: String -> IO [String]
-extractLinksFromPage "" = error "generateLinkBibliography: `extractLinksFromPage` called with an empty '' argument—this should never happen!"
-extractLinksFromPage path =
-  do existsp <- doesFileExist path
-     if not existsp then return [] else
-                    do f <- TIO.readFile path
-                       let pE = runPure $ readMarkdown def{readerExtensions=pandocExtensions} f
-                       return $ case pE of
-                                  Left  _ -> []
-                                  -- make the list unique, but keep the original ordering
-                                  Right p -> map (replace "https://www.gwern.net/" "/") $
-                                                     filter (\l -> head l /= '#') $ -- self-links are not useful in link bibliographies
-                                                     nub $ map T.unpack $ extractURLs p -- TODO: maybe extract the title from the metadata for nicer formatting?
-
-linksToAnnotations :: Metadata -> [String] -> [(String,MetadataItem)]
-linksToAnnotations m = map (linkToAnnotation m)
-linkToAnnotation :: Metadata -> String -> (String,MetadataItem)
-linkToAnnotation m u = case M.lookup u m of
-                         Just i  -> (u,i)
-                         Nothing -> (u,("","","","",[],""))
+extractLinksFromPage path = fmap (fromMaybe []) $ runMaybeT $ do
+  Right f <- try $ TIO.readFile path
+  Right p <- pure $ runPure $ readMarkdown def{readerExtensions=pandocExtensions} f
+  -- make the list unique, but keep the original ordering
+  pure $ map (replace "https://www.gwern.net/" "/") $
+    filter (\l -> head l /= '#') $ -- self-links are not useful in link bibliographies
+    nub $ map T.unpack $ extractURLs p -- TODO: maybe extract the title from the metadata for nicer formatting?
