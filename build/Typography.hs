@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 
 -- Module for typographic enhancements of text:
 -- 1. add link-live (cross-domain iframe popups) & link icon classes to links: split out to LinkIcon.hs
@@ -11,7 +12,7 @@
 --    like with blockquotes/lists).
 module Typography (linebreakingTransform, typographyTransform, titlecase', titlecaseInline, identUniquefy, mergeSpaces) where
 
-import Control.Monad.State.Lazy (evalState, get, put, State)
+import Control.Monad.State.Lazy (evalState, get, put, State, modify, gets)
 import Data.Char (toUpper)
 import qualified Data.Text as T (any, append, concat, pack, unpack, replace, splitOn, strip, Text)
 import Data.Text.Read (decimal)
@@ -22,6 +23,7 @@ import Data.Text.Titlecase (titlecase)
 
 import Text.Pandoc (Inline(..), Block(..), Pandoc, topDown, nullAttr)
 import Text.Pandoc.Walk (walk, walkM)
+import Text.Pandoc.Shared (tshow)
 
 import LinkIcon (linkIcon)
 import LinkLive (linkLive)
@@ -51,41 +53,35 @@ mergeSpaces (SoftBreak:Str x:xs)       = mergeSpaces (Str (" "`T.append`x):xs)
 mergeSpaces (SoftBreak:xs)             = mergeSpaces (Space:xs)
 mergeSpaces (x:xs)                     = x:mergeSpaces xs
 citefyInline :: Int -> Inline -> Inline
-citefyInline year x@(Str s) = let rewrite = go s in if [Str s] == rewrite then x else Span nullAttr rewrite
-  where
-    go :: T.Text -> [Inline]
-    go "" = []
-    go a = let matched'' = match citefyRegexMultiple a :: [[T.Text]]
-               matched'  = match citefyRegexDouble a :: [[T.Text]]
-               matched   = match citefyRegexSingle a :: [[T.Text]]
-               matchAll  = matched'' ++ matched' ++ matched
-           in if null matchAll then [Str a] -- no citation anywhere
-              else
-                let (fullMatch:first:second:third:_) = head matchAll
-                    (before:after) = T.splitOn fullMatch a
-                    citeYear = case decimal third :: Either String (Int, T.Text) of
-                                  Left _ -> 0
-                                  Right (y,_) -> y
-                in
-                  if citeYear > year+3 || -- sanity-check the cite year: generally, a citation can't be for more than 2 years ahead: ie on 31 December 2020, a paper may well have an official date anywhere in 2021, but it would be *highly* unusual for it to be pushed all the way out to 2022 (only the most sluggish of periodicals like annual reviews might do that), so ≥2023 *should* be right out. If we have a 'year' bigger than that, it is probably a false positive, eg. 'Atari 2600' is a video game console and not a paper published by Dr. Atari 6 centuries hence.
-                     first `elem` ["Et", "et", "Al", "al", "Accurate", "Aesthetics", "Africa", "After", "Alert", "America", "An", "Apr", "April", "At", "Atari", "Atlas", "August", "Aug", "Autumn", "Before", "British", "Challenge", "Chat", "Codex", "Cohort", "Commodore", "Competition", "Considered", "Copyright", "Counterfactual", "Crypto", "Daily", "Dear", "Dec", "December", "Diaries", "Differences", "Early", "Enterprise", "Esthetics", "Evolution", "Expo", "Fair", "Fall", "Fanime", "Fanimecon", "Feb", "February", "First", "For", "Friday", "Impacts", "Jan", "January", "Jul", "July", "June", "Last", "Late", "Library", "Making", "Mar", "March", "May", "Memoirs", "Monday", "Monthly", "Ms", "Nov", "November", "Oct", "October", "Original", "Otakon", "Our", "Ours", "Over", "Predicting", "Reviews", "Sample", "Saturday", "Sci", "Security", "Sep", "September", "Since", "Since", "Spring", "Standard", "Statistics", "Suisse", "Summer", "Sunday", "Surface", "Survey", "Syntheses", "Than", "The", "Things", "Throughout", "Thursday", "Tuesday", "Until", "Wednesday", "Weekly", "Winter", "Writing", "Year", "Yearly", "Zilch", "In", "Judging", "From", "Study", "Experiment"] then -- dates like "January 2020" are false positives, although unfortunately there are real surnames like 'May', where 'May 2020' is just ambiguous and this will have a false negative.
-                    [Str a]
-                  else
-                          [Str before] ++
-                          [Span ("", ["cite"], []) ((if T.strip second == "" then
-                                                       -- the easy single/double author case (we only mess with the date, nothing else)
-                                                       [Span ("", ["cite-author"], []) [Str $ T.replace " " " " first]] -- condense with THIN SPACE
-                                                       -- et-al case: different span class to select on, stash the et al joiner in a span to suppress:
-                                                       else [Span ("", ["cite-author-plural"], [("title","et al")]) [Str first]] ++
-                                                             [Span ("", ["cite-joiner"], []) [Str $ " " `T.append` (T.replace " " " " $ T.strip second) `T.append` " "]]) ++
-                                                    [Span ("", ["cite-date"], []) [Str third]])
-                          ] ++
-                          go (T.concat after)
+citefyInline year x@(Str s) = let rewrite = go s in if [Str s] == rewrite then x else Span nullAttr rewrite where
+  go :: T.Text -> [Inline]
+  go "" = []
+  go a = case match citefyRegexMultiple a ++ match citefyRegexDouble a ++ match citefyRegexSingle a of 
+    [] -> [Str a] -- no citation anywhere
+    (fullMatch:first:second:third:_):_ -> let
+      before:after = T.splitOn fullMatch a
+      citeYear = either (const 0) fst $ decimal third
+      in
+      if citeYear > year+3 || -- sanity-check the cite year: generally, a citation can't be for more than 2 years ahead: ie on 31 December 2020, a paper may well have an official date anywhere in 2021, but it would be *highly* unusual for it to be pushed all the way out to 2022 (only the most sluggish of periodicals like annual reviews might do that), so ≥2023 *should* be right out. If we have a 'year' bigger than that, it is probably a false positive, eg. 'Atari 2600' is a video game console and not a paper published by Dr. Atari 6 centuries hence.
+         first `elem` ["Et", "et", "Al", "al", "Accurate", "Aesthetics", "Africa", "After", "Alert", "America", "An", "Apr", "April", "At", "Atari", "Atlas", "August", "Aug", "Autumn", "Before", "British", "Challenge", "Chat", "Codex", "Cohort", "Commodore", "Competition", "Considered", "Copyright", "Counterfactual", "Crypto", "Daily", "Dear", "Dec", "December", "Diaries", "Differences", "Early", "Enterprise", "Esthetics", "Evolution", "Expo", "Fair", "Fall", "Fanime", "Fanimecon", "Feb", "February", "First", "For", "Friday", "Impacts", "Jan", "January", "Jul", "July", "June", "Last", "Late", "Library", "Making", "Mar", "March", "May", "Memoirs", "Monday", "Monthly", "Ms", "Nov", "November", "Oct", "October", "Original", "Otakon", "Our", "Ours", "Over", "Predicting", "Reviews", "Sample", "Saturday", "Sci", "Security", "Sep", "September", "Since", "Since", "Spring", "Standard", "Statistics", "Suisse", "Summer", "Sunday", "Surface", "Survey", "Syntheses", "Than", "The", "Things", "Throughout", "Thursday", "Tuesday", "Until", "Wednesday", "Weekly", "Winter", "Writing", "Year", "Yearly", "Zilch", "In", "Judging", "From", "Study", "Experiment"] -- dates like "January 2020" are false positives, although unfortunately there are real surnames like 'May', where 'May 2020' is just ambiguous and this will have a false negative.
+      then [Str a]
+      else
+        [Str before] ++
+        [Span ("", ["cite"], []) $
+          (if T.strip second == ""
+            -- the easy single/double author case (we only mess with the date, nothing else)
+            then [ Span ("", ["cite-author"], []) [Str $ T.replace " " " " first]] -- condense with THIN SPACE
+            -- et-al case: different span class to select on, stash the et al joiner in a span to suppress:
+            else [ Span ("", ["cite-author-plural"], [("title","et al")]) [Str first]
+                 , Span ("", ["cite-joiner"], []) [Str $ " " `T.append` (T.replace " " " " $ T.strip second) `T.append` " "]])
+          ++ [Span ("", ["cite-date"], []) [Str third]]
+        ] ++
+        go (T.concat after)
 citefyInline _ x = x
 
 citefyRegexSingle, citefyRegexDouble, citefyRegexMultiple :: Regex
-citefyRegexSingle = makeRegex ("([A-Z][" `T.append`  lowercaseUnicode `T.append`  "-]?[A-Z]?[" `T.append`  lowercaseUnicode `T.append`  "-]+)([    \8203]+)([12][0-9][0-9][0-9][a-z]?)" :: T.Text) -- match one-author citations like "Foo 2020" or "Foo 2020a"; we avoid using [:punct:] to avoid matching on en-dashes in date ranges; need to also handle mixed-case like 'McDermot'
-citefyRegexDouble = makeRegex ("([A-Z][" `T.append`  lowercaseUnicode `T.append`  "-]?[A-Z]?[" `T.append`  lowercaseUnicode `T.append`  "-]+[    \8203]+&[    \8203]+[A-Z][a-z-]+)([    \8203]+)([12][0-9][0-9][0-9][a-z]?)" :: T.Text) -- match two-author citations like "Foo & Bar 2020"
+citefyRegexSingle   = makeRegex ("([A-Z][" `T.append`  lowercaseUnicode `T.append`  "-]?[A-Z]?[" `T.append`  lowercaseUnicode `T.append`  "-]+)([    \8203]+)([12][0-9][0-9][0-9][a-z]?)" :: T.Text) -- match one-author citations like "Foo 2020" or "Foo 2020a"; we avoid using [:punct:] to avoid matching on en-dashes in date ranges; need to also handle mixed-case like 'McDermot'
+citefyRegexDouble   = makeRegex ("([A-Z][" `T.append`  lowercaseUnicode `T.append`  "-]?[A-Z]?[" `T.append`  lowercaseUnicode `T.append`  "-]+[    \8203]+&[    \8203]+[A-Z][a-z-]+)([    \8203]+)([12][0-9][0-9][0-9][a-z]?)" :: T.Text) -- match two-author citations like "Foo & Bar 2020"
 citefyRegexMultiple = makeRegex ("([A-Z][" `T.append`  lowercaseUnicode `T.append`  "-]?[A-Z]?[" `T.append`  lowercaseUnicode `T.append`  "-]+)([    \8203]+[Ee]t[    \8203][Aa]l[    \8203]+)([12][0-9][0-9][0-9][a-z]?)" :: T.Text)
 
 -- sourced from /Lorem#unicode-characters - this *should* be pretty much all the lowercase Unicode characters which might turn up in a surname:
@@ -175,18 +171,14 @@ rulersCycle modulus doc = evalState (walkM addHrNth doc) 0
 
 -- Walk a document, and de-duplicate overlapping IDs by appending "-n" for the nth use. This should not be used on regular content pages, where duplicate links should either be de-linked (replaced by a within-page anchor link, say) or given unique IDs by hand. This is useful for auto-generated pages like link-bibliographies or tags, where arbitrarily many different annotations will be inserted and it would be difficult or impossible to remove duplicates or override. So, somewhat analogous to `gensym`, we walk the doc and simply assign new IDs on demand.
 identUniquefy :: Pandoc -> Pandoc
-identUniquefy doc = evalState (walkM addIdentNth doc) M.empty
- where addIdentNth :: Inline -> State (M.Map T.Text Int) Inline
-       addIdentNth x@(Link ("",_,_) _ _) = return x
-       addIdentNth x@(Link (ident,b,c) d (e,f)) = do
-         db <- get
-         case M.lookup ident db of
-           Nothing    -> do put (M.insert ident 1 db)
-                            return x
-           Just count -> do put (M.insert ident (count + 1) db)
-                            return $ Link (ident `T.append` "-" `T.append` T.pack (show (count + 1)),
-                                            b,c) d (e,f)
-       addIdentNth x = return x
+identUniquefy doc = flip evalState M.empty $ flip walkM doc $ \case
+  x@(Link (ident,b,c) d (e,f)) | ident /= "" -> do
+    gets (M.lookup ident) >>= \case
+      Nothing    -> do modify (M.insert ident 1)
+                       return x
+      Just count -> do modify (M.insert ident (count + 1))
+                       return $ Link (ident <> "-" <> tshow (count + 1),b,c) d (e,f)
+  x -> return x
 
 -- rewrite a string (presumably an annotation title) into a mixed-case 'title case'
 -- https://en.wikipedia.org/wiki/Title_case as we expect from headlines/titles
@@ -199,16 +191,14 @@ identUniquefy doc = evalState (walkM addIdentNth doc) M.empty
 -- Hopefully titlecase will do better and we can remove this.
 titlecase' :: String -> String
 titlecase' "" = ""
-titlecase' t = let t' = titlecase $ titlecase'' t
-  -- TODO: `titlecase` strips whitespace <https://github.com/peti/titlecase/issues/7> so have to restore it
-                   t'' = if head t == ' ' then " " ++ t' else t'
-                   t''' = if last t == ' ' then t'' ++ " " else t''
-             in t'''
-   where titlecase'' :: String -> String
-         titlecase'' "" = ""
-         titlecase'' t' = let (before,matched,after) =  t' =~ ("[ $^][A-za-z]\\-[a-z][ $^]"::String) :: (String,String,String)
-                          in replaceMany [("Cite-author", "cite-author"), ("Cite-date", "cite-date"), ("Cite-joiner", "cite-joiner"), ("Class=","class=")] $ -- HACK
-                             before ++ map toUpper matched ++ titlecase'' after
+-- TODO: `titlecase` strips whitespace <https://github.com/peti/titlecase/issues/7> so have to restore it
+titlecase' t = restore head ++ titlecase (go t) ++ restore last where
+  restore f = if f t == ' ' then " " else ""
+  go :: String -> String
+  go "" = ""
+  go t' = let (before,matched,after) = t' =~ ("[ $^][A-za-z]\\-[a-z][ $^]"::String) :: (String,String,String)
+    in replaceMany [("Cite-author", "cite-author"), ("Cite-date", "cite-date"), ("Cite-joiner", "cite-joiner"), ("Class=","class=")] $ -- HACK
+      before ++ map toUpper matched ++ go after
 
 -- lift `titlecase'` to Inline so it can be walked, such as in Headers
 titlecaseInline :: Inline -> Inline

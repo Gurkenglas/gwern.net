@@ -138,13 +138,13 @@ localizeLink adb archived x@(Link (identifier, classes, pairs) b (targetURL, tar
   if whiteList (T.unpack targetURL) || "archive-not" `elem` classes then return x else
     do targetURL' <- rewriteLink adb archived $ T.unpack targetURL
        if targetURL' == T.unpack targetURL then return x -- no archiving has been done yet, return original
-       else do -- rewrite & annotate link with local archive:
-         let padding = if targetDescription == "" then "" else " "
-         let targetDescription' = T.unpack targetDescription ++ padding ++ "(Original URL: " ++ T.unpack targetURL ++ " )"
-         -- specify that the rewritten links are mirrors & to be ignored:
-         let archiveAttributes = [("rel", "archived alternate nofollow"), ("data-url-original", T.pack (transformURLsForLinking (T.unpack targetURL)))]
-         let archivedLink = addClass "archive-local" $ Link (identifier, classes, pairs++archiveAttributes) b (T.pack ('/':targetURL'), T.pack targetDescription')
-         return archivedLink
+        else do -- rewrite & annotate link with local archive:
+          let padding = if targetDescription == "" then "" else " "
+          let targetDescription' = T.unpack targetDescription ++ padding ++ "(Original URL: " ++ T.unpack targetURL ++ " )"
+          -- specify that the rewritten links are mirrors & to be ignored:
+          let archiveAttributes = [("rel", "archived alternate nofollow"), ("data-url-original", T.pack (transformURLsForLinking (T.unpack targetURL)))]
+          let archivedLink = addClass "archive-local" $ Link (identifier, classes, pairs++archiveAttributes) b (T.pack ('/':targetURL'), T.pack targetDescription')
+          return archivedLink
 localizeLink _ _ x = return x
 
 readArchiveMetadata :: IO ArchiveMetadata
@@ -199,18 +199,21 @@ rewriteLink adb archivedN url = do
       Just (Left firstSeen) -> if ((today - firstSeen) < archiveDelay) && not ("pdf" `isInfixOf` url && not ("twitter" `isInfixOf` url))
         then return Nothing
         else do
-                 let url' = transformURLsForArchiving url
-                 archivedP <- archiveURLCheck url'
-                 if archivedP then do archive <- archiveURL url'
-                                      insertLinkIntoDB (Right archive) url
-                                      return archive
-                 else do archivedNAlreadyP <- readIORef archivedN
-                         -- have we already used up our link archive 'budget' this run? If so, skip all additional link archives
-                         if archivedNAlreadyP > 0 then do archive <- archiveURL url'
-                                                          insertLinkIntoDB (Right archive) url
-                                                          writeIORef archivedN (archivedNAlreadyP - 1)
-                                                          return archive
-                         else return Nothing
+          let url' = transformURLsForArchiving url
+          archivedP <- archiveURLCheck url'
+          if archivedP then do 
+              archive <- archiveURL url'
+              insertLinkIntoDB (Right archive) url
+              return archive
+            else do
+              archivedNAlreadyP <- readIORef archivedN
+              -- have we already used up our link archive 'budget' this run? If so, skip all additional link archives
+              if archivedNAlreadyP > 0 then do
+                  archive <- archiveURL url'
+                  insertLinkIntoDB (Right archive) url
+                  writeIORef archivedN (archivedNAlreadyP - 1)
+                  return archive
+                else return Nothing
       Just (Right archive) -> if archive == Just "" then printRed "Error! Tried to return a link to a non-existent archive! " >> print url >> return Nothing else return archive
 
 insertLinkIntoDB :: ArchiveMetadataItem -> String -> IO ()

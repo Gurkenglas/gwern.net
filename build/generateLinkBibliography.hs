@@ -1,5 +1,6 @@
 #!/usr/bin/env runghc
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, PartialTypeSignatures, TypeApplications, BlockArguments #-}
+{-# OPTIONS_GHC -Wno-partial-type-signatures #-}
 module Main where
 
 -- Generate "link bibliographies" for Gwern.net pages.
@@ -16,10 +17,18 @@ module Main where
 -- They are compiled like normal pages by Hakyll, and they are exposed to readers as an additional
 -- link in the page metadata block, paired with the backlinks.
 
-import Control.Monad (when)
+import Data.Maybe (fromMaybe)
+import Control.Monad.Trans.Maybe (runMaybeT)
+import Control.Exception.Lifted (try, IOException)
+import Data.List (zip4, partition)
+import Control.Monad.Trans (liftIO)
+import qualified ListT as LT
+
+import Control.Applicative (empty)
+import Control.Monad (when, guard, void)
 import Data.List (isPrefixOf, isSuffixOf, nub, sort, (\\))
 import Data.Text.Titlecase (titlecase)
-import qualified Data.Map as M (lookup, keys)
+import qualified Data.Map as M (lookup, keys, findWithDefault, toAscList)
 import System.FilePath (takeDirectory, takeFileName)
 
 import Data.Text.IO as TIO (readFile)
@@ -38,55 +47,61 @@ import Typography (typographyTransform)
 import Utils (writeUpdatedFile, replace, printRed)
 import Interwiki (convertInterwikiLinks)
 
-main :: IO ()
-main = do md <- readLinkMetadata
-          -- build HTML fragments for each page or annotation link, containing just the list and no header/full-page wrapper, so they are nice to transclude *into* popups:
-          Par.mapM_ (writeLinkBibliographyFragment md) $ sort $ M.keys md
-
 -- don't waste the user's time if the annotation is not heavily linked, as most are not, or if all the links are WP links:
 mininumLinkBibliographyFragment :: Int
 mininumLinkBibliographyFragment = 3
 
-writeLinkBibliographyFragment :: Metadata -> FilePath -> IO ()
-writeLinkBibliographyFragment _ (_, (_,_,_,_,_,"")) = return ()
-writeLinkBibliographyFragment md (path, (_,_,_,_,_,abstract)) = do
+main :: IO ()
+main = void $ LT.toList $ do
+  md <- liftIO readLinkMetadata
+  -- build HTML fragments for each page or annotation link, containing just the list and no header/full-page wrapper, so they are nice to transclude *into* popups:
+  (path, (_,_,_,_,_,abstract)) <- LT.fromFoldable $ M.toAscList md
+  guard $ abstract /= ""
   let self = takeWhile (/='#') path
       selfAbsolute = "https://www.gwern.net"++self
   -- toggle between parsing the full original Markdown page, and just the annotation abstract:
-  linksRaw <- if head self == '/' && '.'`notElem`path then
-                if '#' `elem` path && abstract=="" then return [] -- if it's just an empty annotation triggered by a section existing, ignore
-                else extractLinksFromPage (tail self ++ ".page")
-              else return $ map T.unpack $ extractLinks False (T.pack abstract)
-  -- delete self-links, such as in the ToC of scraped abstracts, or newsletters linking themselves as the first link (eg '/newsletter/2022/05' will link to 'https://www.gwern.net/newsletter/2022/05' at the beginning)
-  let links = filter (\l -> not (self `isPrefixOf` l || selfAbsolute `isPrefixOf` l)) linksRaw
-  when (length (filter (\l -> not ("https://en.wikipedia.org/wiki/" `isPrefixOf` l))  links) >= mininumLinkBibliographyFragment) $
-    do backlinks    <- mapM (fmap snd . getBackLinkCheck) links
-        similarlinks <- mapM (fmap snd . getSimilarLinkCheck) links
-        let annotations = map (\l -> M.lookupDefault ("","","","",[],"") l md) links
-            pairs' = zip4 links annotations backlinks similarlinks
-            body = [Para [Strong [Str "Link Bibliography"], Str ":"], generateLinkBibliographyItems pairs']
-            document = Pandoc nullMeta body
-            html = runPure $ writeHtml5String def{writerExtensions = pandocExtensions} $
-              walk typographyTransform $ walk convertInterwikiLinks $ walk (hasAnnotation md) document
-        case html of
-          Left e   -> printRed (show e)
-          -- compare with the old version, and update if there are any differences:
-          Right p' -> do let (path',_) = getLinkBibLink path
-                        when (path' == "") $ error ("generateLinkBibliography.hs: writeLinkBibliographyFragment: writing out failed because received empty path' from getLinkBibLink for original path: " ++ path)
-                        writeUpdatedFile "link-bibliography-fragment" path' p'
+  links <- LT.toList $ do
+    linkRaw <- if head self == '/' && '.'`notElem`path then do
+      Right file <- try @_ @IOException $ liftIO $ TIO.readFile $ tail self ++ ".page"
+      Right p <- pure $ runPure $ readMarkdown def{readerExtensions=pandocExtensions} file
+      -- TODO: maybe extract the title from the metadata for nicer formatting?
+      -- make the list unique, but keep the original ordering
+      url <- LT.fromFoldable $ nub $ map T.unpack $ extractURLs p
+      guard $ head url /= '#' -- self-links are not useful in link bibliographies
+      pure $ replace "https://www.gwern.net/" "/" url
+      else fmap T.unpack $ LT.fromFoldable $ extractLinks False $ T.pack abstract
+    -- delete self-links, such as in the ToC of scraped abstracts, or newsletters linking themselves as the first link (eg '/newsletter/2022/05' will link to 'https://www.gwern.net/newsletter/2022/05' at the beginning)
+    guard $ not $ self `isPrefixOf` linkRaw
+    guard $ not $ selfAbsolute `isPrefixOf` linkRaw
+    pure linkRaw
+  guard $ length (filter (\l -> not ("https://en.wikipedia.org/wiki/" `isPrefixOf` l)) links) >= mininumLinkBibliographyFragment
+  quartets <- LT.toList $ do
+    link <- LT.fromFoldable links
+    (_,backlink)    <- liftIO $ getBackLinkCheck link
+    (_,similarlink) <- liftIO $ getSimilarLinkCheck link
+    let annotation = M.findWithDefault ("","","","",[],"") link md
+    pure (link, annotation, backlink, similarlink)
+  let body = [Para [Strong [Str "Link Bibliography"], Str ":"], generateLinkBibliographyItems quartets]
+      document = Pandoc nullMeta body
+  html <- either (\e -> liftIO (printRed $ show e) >> empty) pure $
+    runPure $ writeHtml5String def{writerExtensions = pandocExtensions} $
+      walk typographyTransform $ walk convertInterwikiLinks $ walk (hasAnnotation md) document
+  -- compare with the old version, and update if there are any differences:
+  let (path',_) = getLinkBibLink path
+  when (path' == "") $ error ("generateLinkBibliography.hs: writeLinkBibliographyFragment: writing out failed because received empty path' from getLinkBibLink for original path: " ++ path)
+  liftIO $ writeUpdatedFile "link-bibliography-fragment" path' html
 
 generateLinkBibliographyItems :: [(String,MetadataItem,FilePath,FilePath)] -> Block
 generateLinkBibliographyItems [] = Para []
-generateLinkBibliographyItems items = let itemsWP = filter (\(u,_,_,_) -> "https://en.wikipedia.org/wiki/" `isPrefixOf` u) items
-                                          itemsPrimary =  items \\ itemsWP
-                                    in OrderedList (1, LowerAlpha, DefaultDelim)
-                                      (map generateLinkBibliographyItem itemsPrimary ++
-                                          -- because WP links are so numerous, and so bulky, stick them into a collapsed sub-list at the end:
-                                          if null itemsWP then [] else [
-                                                                        [Div ("",[if length itemsWP > 3 then "collapse" else ""],[]) [
-                                                                            Para [Strong [Str "Wikipedia link-bibliography"], Str ":"],
-                                                                            OrderedList (1, UpperAlpha, DefaultDelim) (map generateLinkBibliographyItem itemsWP)]]]
-                                      )
+generateLinkBibliographyItems items =
+  let (itemsWP, itemsPrimary) = partition (\(u,_,_,_) -> "https://en.wikipedia.org/wiki/" `isPrefixOf` u) items
+  in OrderedList (1, LowerAlpha, DefaultDelim) $
+    map generateLinkBibliographyItem itemsPrimary ++
+      -- because WP links are so numerous, and so bulky, stick them into a collapsed sub-list at the end:
+      if null itemsWP then [] else [
+        [Div ("",[if length itemsWP > 3 then "collapse" else ""],[]) [
+          Para [Strong [Str "Wikipedia link-bibliography"], Str ":"],
+          OrderedList (1, UpperAlpha, DefaultDelim) (map generateLinkBibliographyItem itemsWP)]]]
 generateLinkBibliographyItem  :: (String,MetadataItem,FilePath,FilePath) -> [Block]
 generateLinkBibliographyItem (f,(t,aut,_,_,_,""),_,_)  = -- short:
   let f'
@@ -96,20 +111,10 @@ generateLinkBibliographyItem (f,(t,aut,_,_,_,""),_,_)  = -- short:
       authorShort = authorsTruncate aut
       authorSpan  = if authorShort/=aut then Span ("",["full-authors-list"],[("title", T.pack aut)]) . pure else id
       author = if aut=="" || aut=="N/A" then []
-               else
-                 [Str ",", Space, authorSpan (Str (T.pack authorShort))]
+               else [Str ",", Space, authorSpan (Str (T.pack authorShort))]
       -- I skip date because files don't usually have anything better than year, and that's already encoded in the filename which is shown
       linkAttr = if "https://en.wikipedia.org/wiki/" `isPrefixOf` f then ("",["include-annotation"],[]) else nullAttr
       title = if t=="" then [Code nullAttr (T.pack f')] else [Str "“", Str (T.pack $ titlecase t), Str "”"]
   in [Para (Link linkAttr title (T.pack f, "") : author)]
 -- long items:
 generateLinkBibliographyItem (f,a,bl,sl) = generateAnnotationTransclusionBlock (f,a) bl sl ""
-
-extractLinksFromPage :: String -> IO [String]
-extractLinksFromPage path = fmap (fromMaybe []) $ runMaybeT $ do
-  Right f <- try $ TIO.readFile path
-  Right p <- pure $ runPure $ readMarkdown def{readerExtensions=pandocExtensions} f
-  -- make the list unique, but keep the original ordering
-  pure $ map (replace "https://www.gwern.net/" "/") $
-    filter (\l -> head l /= '#') $ -- self-links are not useful in link bibliographies
-    nub $ map T.unpack $ extractURLs p -- TODO: maybe extract the title from the metadata for nicer formatting?

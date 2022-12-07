@@ -13,10 +13,13 @@ License: CC-0
 -- '/early/' links, forcing me to use curl+Tagsoup; the R library 'fulltext' crashes on examples
 -- like `ft_abstract(x = c("10.1038/s41588-018-0183-z"))`
 
-{-# LANGUAGE OverloadedStrings, DeriveGeneric #-}
+{-# LANGUAGE OverloadedStrings, DeriveGeneric, BlockArguments #-}
 module LinkMetadata (addPageLinkWalk, isPagePath, readLinkMetadata, readLinkMetadataAndCheck, walkAndUpdateLinkMetadata, updateGwernEntries, writeAnnotationFragments, Metadata, MetadataItem, MetadataList, readYaml, readYamlFast, writeYaml, annotateLink, createAnnotations, hasAnnotation, parseRawBlock, parseRawInline, generateAnnotationBlock, generateAnnotationTransclusionBlock, authorsToCite, authorsTruncate, cleanAbstractsHTML, sortItemDate, sortItemPathDate, warnParagraphizeYAML, simplifiedHTMLString, tooltipToMetadata, dateTruncateBad) where
 
-import Control.Monad (unless, void, when, foldM_)
+import Control.Applicative (empty)
+import Control.Monad.Trans.Maybe (runMaybeT)
+import Control.Monad.Trans (lift)
+import Control.Monad (unless, void, when, foldM_, guard, mzero)
 import Data.Aeson (eitherDecode, FromJSON)
 import qualified Data.ByteString as B (appendFile, readFile)
 import qualified Data.ByteString.Lazy as BL (length, concat)
@@ -593,33 +596,36 @@ writeYaml path yaml = lock $ do
 
 -- skip all of the checks, validations, tag creation etc
 readYamlFast :: Path -> IO MetadataList
-readYamlFast yamlp = do file <- B.readFile yamlp
-                        let yaml = Y.decodeEither' file :: Either ParseException [[String]]
-                        case yaml of
-                           Left  e -> error (show e)
-                           Right y -> (return $ concatMap convertListToMetadataFast y) :: IO MetadataList
-                where
-                 convertListToMetadataFast :: [String] -> MetadataList
-                 convertListToMetadataFast [u, t, a, d, di,     s] = [(u, (t,a,d,di,tag2TagsWithDefault u "", s))]
-                 convertListToMetadataFast [u, t, a, d, di, ts, s] = [(u, (t,a,d,di,tag2TagsWithDefault u ts, s))]
-                 convertListToMetadataFast                        e = error $ "Pattern-match failed (too few fields?): " ++ ppShow e
+readYamlFast yamlp = do
+  file <- B.readFile yamlp
+  let yaml = Y.decodeEither' file :: Either ParseException [[String]]
+      listtomd :: [String] -> MetadataList
+      listtomd [u, t, a, d, di,     s] = [(u, (t,a,d,di,tag2TagsWithDefault u "", s))]
+      listtomd [u, t, a, d, di, ts, s] = [(u, (t,a,d,di,tag2TagsWithDefault u ts, s))]
+      listtomd                        e = error $ "Pattern-match failed (too few fields?): " ++ ppShow e
+  case yaml of
+    Left  e -> error (show e)
+    Right y -> return $ concatMap listtomd y :: IO MetadataList
+                
 
 readYaml :: Path -> IO MetadataList
-readYaml yaml = do yaml' <- do filep <- doesFileExist yaml
-                               if filep then return yaml
-                               else do fileAbsoluteP <- doesFileExist ("/home/gwern/wiki/" ++ yaml)
-                                       if not fileAbsoluteP then printRed ("YAML path does not exist: " ++ yaml) >> return yaml
-                                       else return ("/home/gwern/wiki/" ++ yaml)
-                   file <- Y.decodeFileEither yaml' :: IO (Either ParseException [[String]])
-                   allTags <- listTagsAll
-                   case file of
-                     Left  e -> error $ "File: "++ yaml ++ "; parse error: " ++ ppShow e
-                     Right y -> (return $ concatMap (convertListToMetadata allTags) y) :: IO MetadataList
-                where
-                 convertListToMetadata :: [String] -> [String] -> MetadataList
-                 convertListToMetadata allTags' [u, t, a, d, di,     s] = [(u, (t,a,guessDateFromLocalSchema u d,di,map (guessTagFromShort allTags') $ uniqTags $ pages2Tags u $ tag2TagsWithDefault u "", s))]
-                 convertListToMetadata allTags' [u, t, a, d, di, ts, s] = [(u, (t,a,guessDateFromLocalSchema u d,di,map (guessTagFromShort allTags') $ uniqTags $ pages2Tags u $ tag2TagsWithDefault u ts, s))]
-                 convertListToMetadata _                     e = error $ "Pattern-match failed (too few fields?): " ++ ppShow e
+readYaml yaml = do
+  yaml' <- do
+    filep <- doesFileExist yaml
+    if filep then return yaml else do
+      fileAbsoluteP <- doesFileExist ("/home/gwern/wiki/" ++ yaml)
+      unless fileAbsoluteP $ printRed $ "YAML path does not exist: " ++ yaml
+      return ("/home/gwern/wiki/" ++ yaml)
+  file <- Y.decodeFileEither yaml' :: IO (Either ParseException [[String]])
+  allTags <- listTagsAll
+  let listtomd :: [String] -> MetadataList
+      listtomd [u, t, a, d, di,     s] = [(u, (t,a,guessDateFromLocalSchema u d,di,map (guessTagFromShort allTags) $ uniqTags $ pages2Tags u $ tag2TagsWithDefault u "", s))]
+      listtomd [u, t, a, d, di, ts, s] = [(u, (t,a,guessDateFromLocalSchema u d,di,map (guessTagFromShort allTags) $ uniqTags $ pages2Tags u $ tag2TagsWithDefault u ts, s))]
+      listtomd                       e = error $ "Pattern-match failed (too few fields?): " ++ ppShow e
+  case file of
+    Left  e -> error $ "File: "++ yaml ++ "; parse error: " ++ ppShow e
+    Right y -> return $ concatMap listtomd y :: IO MetadataList
+                 
 
 -- If no accurate date is available, attempt to guess date from the local file schema of 'YYYY-surname-[title, disambiguation, etc].ext' or 'YYYY-MM-DD-...'
 -- This is useful for PDFs with bad metadata, or data files with no easy way to extract metadata (like HTML files with hopelessly inconsistent dirty metadata fields like `<meta>` tags) or where it's not yet supported (image files usually have a reliable creation date).
@@ -770,7 +776,7 @@ pdf p = do let p' = takeWhile (/='#') $ if head p == '/' then tail p else p
                 -- case aMaybe of
                 --   Nothing -> return (Left Permanent)
                 --   Just a -> return $ Right (p, (trimTitle etitle, author, trim $ replace ":" "-" edate, edoi', a))
-           else printRed "PDF annotation failed, insufficient data or unreadable file; exiftool returned: " >> putStrLn ("title/author/date: " ++ show mbTitle ++ " ; DOI: " ++ show mbDoi) >> return (Left Permanent)
+             else printRed "PDF annotation failed, insufficient data or unreadable file; exiftool returned: " >> putStrLn ("title/author/date: " ++ show mbTitle ++ " ; DOI: " ++ show mbDoi) >> return (Left Permanent)
 
 filterMeta :: String -> String
 filterMeta ea = if anyInfix ea badSubstrings || elem ea badWholes then "" else ea
@@ -784,17 +790,15 @@ instance FromJSON Crossref
 newtype Message = Message { abstract :: Maybe String } deriving (Show,Generic)
 instance FromJSON Message
 doi2Abstract :: String -> IO (Maybe String)
-doi2Abstract doi = if length doi < 7 then return Nothing
-                   else do (_,_,bs) <- runShellCommand "./" Nothing "curl" ["--location", "--silent", "https://api.crossref.org/works/"++doi, "--user-agent", "gwern+crossrefscraping@gwern.net"]
-                           if bs=="Resource not found." then return Nothing
-                           else let j = eitherDecode bs :: Either String Crossref
-                                in case j of -- start unwrapping...
-                                    Left e -> printRed ("Error: Crossref request failed: "++doi++" "++e) >> return Nothing
-                                    Right j' -> let j'' = abstract $ message j' in
-                                      case j'' of
-                                       Nothing -> return Nothing
-                                       Just a -> do trimmedAbstract <- fmap cleanAbstractsHTML $ processParagraphizer doi $ cleanAbstractsHTML a
-                                                    return $ Just trimmedAbstract
+doi2Abstract doi = runMaybeT $ do
+  guard $ length doi >= 7
+  (_,_,bs) <- lift $ runShellCommand "./" Nothing "curl" ["--location", "--silent", "https://api.crossref.org/works/"++doi, "--user-agent", "gwern+crossrefscraping@gwern.net"]
+  guard $ bs/="Resource not found."
+  j <- case eitherDecode bs :: Either String Crossref of
+    Left e -> lift $ printRed ("Error: Crossref request failed: "++doi++" "++e) >> mzero
+    Right j -> pure j
+  a <- maybe empty pure $ abstract $ message j
+  fmap cleanAbstractsHTML $ lift $ processParagraphizer doi $ cleanAbstractsHTML a
 
 -- handles medRxiv too (same codebase)
 biorxiv p = do checkURL p
@@ -981,19 +985,19 @@ paragraphized f a = f `elem` whitelist ||
 processParagraphizer :: FilePath -> String -> IO String
 processParagraphizer _ "" = return ""
 processParagraphizer p a =
-      if length a < 1024 || paragraphized p a then return a
-      else do let a' = replace "<p>" "" $ replace "</p>" "" a
-              let a'' = trim $ replace "\160" " " $ toMarkdown a'
-              (status,_,mb) <- runShellCommand "./" Nothing "python" ["static/build/paragraphizer.py", a'']
-              case status of
-                ExitFailure err -> printGreen (intercalate " : " [a, a', ppShow status, ppShow err, ppShow mb]) >> printRed "Paragraphizer failed!" >> return a
-                _ -> do let clean = runPure $ do
-                              pandoc <- readMarkdown def{readerExtensions=pandocExtensions} (T.pack $ trim $ U.toString mb)
-                              html <- writeHtml5String safeHtmlWriterOptions pandoc
-                              return $ T.unpack html
-                        case clean of
-                              Left e -> error $ ppShow e ++ " : " ++ a
-                              Right output -> return $ cleanAbstractsHTML output
+    if length a < 1024 || paragraphized p a then return a
+    else do let a' = replace "<p>" "" $ replace "</p>" "" a
+            let a'' = trim $ replace "\160" " " $ toMarkdown a'
+            (status,_,mb) <- runShellCommand "./" Nothing "python" ["static/build/paragraphizer.py", a'']
+            case status of
+              ExitFailure err -> printGreen (intercalate " : " [a, a', ppShow status, ppShow err, ppShow mb]) >> printRed "Paragraphizer failed!" >> return a
+              _ -> do let clean = runPure $ do
+                            pandoc <- readMarkdown def{readerExtensions=pandocExtensions} (T.pack $ trim $ U.toString mb)
+                            html <- writeHtml5String safeHtmlWriterOptions pandoc
+                            return $ T.unpack html
+                      case clean of
+                            Left e -> error $ ppShow e ++ " : " ++ a
+                            Right output -> return $ cleanAbstractsHTML output
 
 --------------------------------------------
 -- String munging and processing
@@ -1002,7 +1006,7 @@ processParagraphizer p a =
 -- for link bibliographies / tag pages, better truncate author lists at a reasonable length.
 -- (We can make it relatively short because the full author list will be preserved as part of it.)
 authorsTruncate :: String -> String
-authorsTruncate a = let (before,after) = splitAt 100 a in before ++ (if null after then "" else (head $ split ", " after))
+authorsTruncate a = let (before,after) = splitAt 100 a in before ++ if null after then "" else head $ split ", " after
 
 dateTruncateBad :: String -> String
  -- we assume that dates are guaranteed to be 'YYYY[-MM[-DD]]' format because of the validation in readLinkMetadataAndCheck enforcing this
@@ -1065,7 +1069,7 @@ gwern p | p == "/" || p == "" = return (Left Permanent)
 
                         let (sectTitle,gabstract) = gwernAbstract ("/index" `isSuffixOf` p' || "newsletter/" `isPrefixOf` p') p' description toc' f
 
-                        let title' = if null sectTitle then title else title ++ " § " ++ sectTitle
+                        let title' = title ++ if null sectTitle then "" else " § " ++ sectTitle
 
                         let combinedAnnotation = (if "</figure>" `isInfixOf` gabstract || "<img>" `isInfixOf` gabstract || null gabstract then "" else thumbnailFigure) ++ -- some pages like /Questions have an image inside the abstract; preserve that if it's there
                                                  gabstract
@@ -1081,9 +1085,10 @@ gwern p | p == "/" || p == "" = return (Left Permanent)
 
 -- skip the complex gwernAbstract logic: /docs/index is special because it has only subdirectories, is not tagged, and is the entry point. We just generate the ToC directly from a recursive tree of subdirectories with 'index.page' entries:
 gwerntoplevelDocAbstract :: IO (Either Failure (Path, MetadataItem))
-gwerntoplevelDocAbstract = do allDirs <- listTagDirectories ["docs/"]
-                              let allDirLinks = unlines $ map (\d -> "<li><a class='link-page link-tag directory-indexes-downwards link-annotated link-annotated-partial' data-link-icon='arrow-down' data-link-icon-type='svg' rel='tag' href=\"" ++ d ++ "\">" ++ (T.unpack $ abbreviateTag (T.pack (replace "/docs/" "" $ takeDirectory d))) ++ "</a></li>") allDirs
-                              return $ Right ("/docs/index", ("docs tag","N/A","","",[],"<p>Bibliography for tag <em>docs</em>, most recent first: " ++ show (length allDirs) ++ " tags (<a href='/index' class='link-page link-tag directory-indexes-upwards link-annotated link-annotated-partial' data-link-icon='arrow-up-left' data-link-icon-type='svg' rel='tag' title='Link to parent directory'>parent</a>).</p> <div class=\"columns TOC\"> <ul>" ++ allDirLinks ++ "</ul> </div>"))
+gwerntoplevelDocAbstract = do
+  allDirs <- listTagDirectories ["docs/"]
+  let allDirLinks = unlines $ map (\d -> "<li><a class='link-page link-tag directory-indexes-downwards link-annotated link-annotated-partial' data-link-icon='arrow-down' data-link-icon-type='svg' rel='tag' href=\"" ++ d ++ "\">" ++ (T.unpack $ abbreviateTag (T.pack (replace "/docs/" "" $ takeDirectory d))) ++ "</a></li>") allDirs
+  return $ Right ("/docs/index", ("docs tag","N/A","","",[],"<p>Bibliography for tag <em>docs</em>, most recent first: " ++ show (length allDirs) ++ " tags (<a href='/index' class='link-page link-tag directory-indexes-upwards link-annotated link-annotated-partial' data-link-icon='arrow-up-left' data-link-icon-type='svg' rel='tag' title='Link to parent directory'>parent</a>).</p> <div class=\"columns TOC\"> <ul>" ++ allDirLinks ++ "</ul> </div>"))
 
 gwernAbstract :: Bool -> String -> String -> String -> [Tag String] -> (String,String)
 gwernAbstract shortAllowed p' description toc f =

@@ -16,3 +16,4 @@ build/generateSimilar
 build/preprocess-markdown
 build/generateSimilarLinks
 build/guessTag
+dist-newstyle

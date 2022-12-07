@@ -117,7 +117,17 @@ abbreviateTag = T.pack . sedMany tagRewritesRegexes . replaceMany tagsLong2Short
                              ]
 
 listTagsAll :: IO [String]
-listTagsAll = fmap (map (replace "docs/" "") . sort . filter (\f' -> not $ anyInfix f' ["personal/2011-gwern-yourmorals.org", "rotten.com", "2000-iapac-norvir", "beanmachine-multistage", "docs/www/"]) ) $ getDirFiltered (\f -> doesFileExist (f++"/index.page")) "docs/"
+listTagsAll
+  = fmap
+    ( map (replace "docs/" "")
+    . sort
+    . filter (\f' -> not $ anyInfix f'
+      [ "personal/2011-gwern-yourmorals.org"
+      , "rotten.com"
+      , "2000-iapac-norvir"
+      , "beanmachine-multistage"
+      , "docs/www/"]))
+  $ getDirFiltered (\f -> doesFileExist (f++"/index.page")) "docs/"
 
 -- given a list of ["docs/foo/index.page"] directories, convert them to what will be the final absolute path ("/docs/foo/index"), while checking they exist (typos are easy, eg. dropping 'docs/' is common).
 listTagDirectories :: [FilePath] -> IO [FilePath]
