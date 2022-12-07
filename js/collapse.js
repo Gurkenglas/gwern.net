@@ -1,35 +1,3 @@
-/*******************************/
-/*	Events fired by collapse.js:
-
-	Collapse.collapseStateDidChange {
-			source: "Collapse.collapseBlockDisclosureButtonStateChanged"
-		}
-		Fired when collapse state (i.e., the collapsed/expanded state of a 
-		collapse block) changes in response to a collapse block’s disclosure
-		button being activated.
-
-	Collapse.collapseStateDidChange {
-			source: "expandCollapseBlocksToReveal"
-		}
-		Fired when collapse state (i.e., the collapsed/expanded state of a 
-		collapse block) changes (specifically: changes to the expanded state) in
-		response to a navigation action that takes the user to an element that 
-		was within a collapsed block.
-
-	Collapse.collapseStateDidChange {
-			source: "prepareCollapseBlocks"
-		}
-		Fired at load time if a collapse block starts out expanded, due to it,
-		or some element within it, being pointed to by the URL hash. (The state
-		change is from the default state, i.e. collapsed, to the expanded state
-		specified by the hash.)
-
-	Collapse.targetDidRevealOnHashUpdate
-		Fired when an element targeted by the URL hash is revealed (i.e., 
-		scrolled to, causing it to end up within the viewport) as a result of
-		a hash change (which may include the initial page load).
- */
-
 /*******************************************************************************/
 /*  This function expands all collapse blocks containing the given node, if
     any (including the node itself, if it is a collapse block). Returns true
@@ -145,13 +113,13 @@ function isWithinCollapsedBlock(element) {
 /***********************************************************************/
 /*  Inject disclosure buttons and otherwise prepare the collapse blocks.
  */
-addContentLoadHandler(GW.contentLoadHandlers.prepareCollapseBlocks = (loadEventInfo) => {
+addContentLoadHandler(GW.contentLoadHandlers.prepareCollapseBlocks = (eventInfo) => {
 	GWLog("prepareCollapseBlocks", "collapse.js", 1);
 
 	let aBlockDidStartExpanded = false;
 
 	//  Construct all collapse blocks (in correct final state).
-	loadEventInfo.container.querySelectorAll(".collapse").forEach(collapseBlock => {
+	eventInfo.container.querySelectorAll(".collapse").forEach(collapseBlock => {
 		let checked = collapseBlock.contains(getHashTargetedElement()) ? " checked='checked'" : "";
 		let disclosureButtonHTML = `<input type='checkbox' class='disclosure-button' aria-label='Open/close collapsed section'${checked}>`;
 
@@ -164,12 +132,12 @@ addContentLoadHandler(GW.contentLoadHandlers.prepareCollapseBlocks = (loadEventI
 			if (checked > "")
 				collapseBlock.classList.add("expanded");
 		} else if ([ "H1", "H2", "H3", "H4", "H5", "H6" ].includes(collapseBlock.tagName)) {
-			//  Remove the ‘collapse’ class and do nothing else.
+			//  Remove collapse classes and do nothing else.
 			collapseBlock.classList.remove("collapse", "expand-on-hover");
 			if (collapseBlock.className == "")
 				collapseBlock.removeAttribute("class");
-		} else if (   collapseBlock.parentElement.tagName == "DIV" 
-				   && collapseBlock.parentElement.children.length == 1) {
+		} else if (   collapseBlock.parentElement.tagName == "DIV"
+				   && isOnlyChild(collapseBlock)) {
 			//  Use parent div as collapse block wrapper.
 			let realCollapseBlock = collapseBlock.parentElement;
 			realCollapseBlock.classList.add("collapse");
@@ -183,42 +151,34 @@ addContentLoadHandler(GW.contentLoadHandlers.prepareCollapseBlocks = (loadEventI
 
 			//  Remove the ‘collapse’ class.
 			collapseBlock.classList.remove("collapse", "expand-on-hover");
-			if (collapseBlock.className == "")
-				collapseBlock.removeAttribute("class");
+			collapseBlock.classList.add("collapse-content-wrapper");
 		} else {
 			//  Construct collapse block wrapper and inject the disclosure button.
-			let collapseBlockClasses = [ "collapse" ];
-			if (checked)
-				collapseBlockClasses.push("expanded");
-			if (collapseBlock.classList.contains("expand-on-hover"))
-				collapseBlockClasses.push("expand-on-hover");
-			let realCollapseBlock = newElement("DIV", { "class": collapseBlockClasses.join(" ") });
-			realCollapseBlock.insertAdjacentHTML("afterbegin", disclosureButtonHTML);
+			if (checked > "")
+				collapseBlock.classList.add("expanded");
 
-			//  Move block-to-be-collapsed into wrapper.
-			collapseBlock.parentElement.insertBefore(realCollapseBlock, collapseBlock);
-			realCollapseBlock.appendChild(collapseBlock);
+			//	Construct wrapper.
+			let collapseBlockWrapper = newElement("DIV", { "class": "collapse-content-wrapper" });
+			collapseBlockWrapper.append(...collapseBlock.childNodes);
+			collapseBlock.append(collapseBlockWrapper);
 
-			//  Remove the ‘collapse’ class.
-			collapseBlock.classList.remove("collapse", "expand-on-hover");
-			if (collapseBlock.className == "")
-				collapseBlock.removeAttribute("class");
+			//	Inject disclosure button.
+			collapseBlock.insertAdjacentHTML("afterbegin", disclosureButtonHTML);
 		}
 	});
 
 	if (aBlockDidStartExpanded)
 		GW.notificationCenter.fireEvent("Collapse.collapseStateDidChange", { source: "prepareCollapseBlocks" });
-}, ">rewrite", (info) => (   info.needsRewrite 
-						  && info.collapseAllowed));
+}, "rewrite");
 
 /*************************************************/
 /*  Add event listeners to the disclosure buttons.
  */
-addContentLoadHandler(GW.contentLoadHandlers.activateCollapseBlockDisclosureButtons = (loadEventInfo) => {
+addContentInjectHandler(GW.contentInjectHandlers.activateCollapseBlockDisclosureButtons = (eventInfo) => {
 	GWLog("activateCollapseBlockDisclosureButtons", "collapse.js", 1);
 
     //  Add listeners to toggle ‘expanded’ class of collapse blocks.
-	loadEventInfo.container.querySelectorAll(".disclosure-button").forEach(disclosureButton => {
+	eventInfo.container.querySelectorAll(".disclosure-button").forEach(disclosureButton => {
 		updateDisclosureButtonTitle(disclosureButton);
 
 		let collapseBlock = disclosureButton.closest(".collapse");
@@ -252,13 +212,13 @@ addContentLoadHandler(GW.contentLoadHandlers.activateCollapseBlockDisclosureButt
 			/*	If a collapse block was collapsed from the bottom, it might now
 				be up off the screen. Scroll it into view.
 			 */
-			if (   !disclosureButton.checked 
+			if (   !disclosureButton.checked
 				&& !isOnScreen(collapseBlock))
 				scrollCollapseBlockIntoView(collapseBlock);
 			/*	If a collapse block was expanded from the bottom, the top of the
 				collapse block might be up off the screen. Scroll it into view.
 			 */
-			else if (   disclosureButton.checked 
+			else if (   disclosureButton.checked
 					 && collapseBlock.getBoundingClientRect().top < 0)
 				scrollCollapseBlockIntoView(collapseBlock);
 
@@ -269,8 +229,8 @@ addContentLoadHandler(GW.contentLoadHandlers.activateCollapseBlockDisclosureButt
 			is temporarily expanded causes it to stay expanded permanently.
 		 */
 		if (collapseBlock.classList.contains("expand-on-hover")) {
-			let expandOnHoverDelay = 750;
-			let collapseOnUnhoverDelay = 250;
+			let expandOnHoverDelay = 800;
+			let collapseOnUnhoverDelay = 300;
 
 			onEventAfterDelayDo(collapseBlock, "mouseenter", expandOnHoverDelay, (event) => {
 				if (disclosureButton.checked)
@@ -302,41 +262,57 @@ addContentLoadHandler(GW.contentLoadHandlers.activateCollapseBlockDisclosureButt
 			}, "mouseleave");
 		}
 	});
-}, "eventListeners", (info) => info.collapseAllowed);
+}, "eventListeners");
+
+/************************************************************************/
+/*	Permanently expand a collapse block and remove its disclosure button.
+ */
+function expandLockCollapseBlock(collapseBlock) {
+	//	Remove disclosure button.
+	collapseBlock.querySelector(".disclosure-button").remove();
+
+	//	Expand.
+	let wasCollapsed = !collapseBlock.classList.contains("expanded");
+
+	collapseBlock.classList.remove("collapse", "expanded", "expand-on-hover");
+	if (collapseBlock.className == "")
+		collapseBlock.removeAttribute("class");
+	if (   collapseBlock.firstElementChild.tagName == "DIV"
+		&& collapseBlock.firstElementChild.classList.contains("collapse-content-wrapper")
+		&& isOnlyChild(collapseBlock.firstElementChild)) {
+		unwrap(collapseBlock.firstElementChild);
+	} else if (   collapseBlock.tagName == "DIV"
+			   && collapseBlock.className == ""
+			   && isOnlyChild(collapseBlock.firstElementChild)) {
+		unwrap(collapseBlock);
+	}
+
+	//	Fire event.
+	if (wasCollapsed)
+		GW.notificationCenter.fireEvent("Collapse.collapseStateDidChange", { source: "Collapse.expandLockCollapseBlocks" });
+}
 
 /**********************************************************/
 /*	Removes disclosure buttons and expands collapse blocks.
  */
-addContentLoadHandler(GW.contentLoadHandlers.expandLockCollapseBlocks = (loadEventInfo) => {
+addContentInjectHandler(GW.contentInjectHandlers.expandLockCollapseBlocks = (eventInfo) => {
 	GWLog("expandLockCollapseBlocks", "collapse.js", 2);
 
-	//  Remove disclosure buttons.
-	loadEventInfo.container.querySelectorAll(".disclosure-button").forEach(disclosureButton => {
-		disclosureButton.remove();
-	});
-
 	//  Permanently expand collapse blocks (by making them into regular blocks).
-	loadEventInfo.container.querySelectorAll(".collapse").forEach(collapseBlock => {
-		let wasCollapsed = !collapseBlock.classList.contains("expanded");
+	eventInfo.container.querySelectorAll(".collapse").forEach(expandLockCollapseBlock);
+}, "<rewrite", (info) => info.stripCollapses);
 
-		collapseBlock.classList.remove("collapse", "expanded");
-		if (collapseBlock.className == "")
-			collapseBlock.removeAttribute("class");
-		if (   collapseBlock.firstElementChild.tagName == "DIV"
-			&& collapseBlock.firstElementChild.className == ""
-			&& isOnlyChild(collapseBlock.firstElementChild)) {
-			unwrap(collapseBlock.firstElementChild);
-		} else if (   collapseBlock.tagName == "DIV"
-				   && collapseBlock.className == ""
-				   && isOnlyChild(collapseBlock.firstElementChild)) {
-			unwrap(collapseBlock);
-		}
+/********************************************************************/
+/*	Strip a single collapse block encompassing the top level content.
+ */
+addContentInjectHandler(GW.contentInjectHandlers.expandLockSingleTopLevelCollapseBlock = (eventInfo) => {
+	GWLog("expandLockSingleTopLevelCollapseBlock", "collapse.js", 2);
 
-		if (wasCollapsed)
-	    	GW.notificationCenter.fireEvent("Collapse.collapseStateDidChange", { source: "Collapse.expandLockCollapseBlocks" });
-
-	});
-}, ">rewrite", (info) => (info.collapseAllowed == false));
+	if (   isOnlyChild(eventInfo.container.firstElementChild)
+		&& eventInfo.container == eventInfo.document.body
+		&& eventInfo.container.firstElementChild.classList.contains("collapse"))
+		expandLockCollapseBlock(eventInfo.container.firstElementChild);
+}, "<rewrite");
 
 /*******************************************************************************/
 /*	Ensure that the given element is scrolled into view when layout is complete.
@@ -413,19 +389,19 @@ GW.notificationCenter.addHandlerForEvent("GW.hashHandlingSetupDidComplete", GW.r
 });
 
 /*******************************************************************************/
-/*	What happens when a user C-fs on a page and there is a hit *inside* a 
-	collapse block? Just navigating to the collapsed section is not useful, 
-	especially when there may be multiple collapses inside a frame. So we must 
-	specially handle searches and pop open collapse sections with matches. We do 
+/*	What happens when a user C-fs on a page and there is a hit *inside* a
+	collapse block? Just navigating to the collapsed section is not useful,
+	especially when there may be multiple collapses inside a frame. So we must
+	specially handle searches and pop open collapse sections with matches. We do
 	this by watching for selection changes. (We don’t bother checking for window
-	focus/blur because that is unreliable and in any case doesn’t work for 
+	focus/blur because that is unreliable and in any case doesn’t work for
 	“Search Again” key command.)
  */
 document.addEventListener("selectionchange", GW.selectionChanged = (event) => {
 	GWLog("GW.selectionChangedCheckForCollapsedContainer", "collapse.js", 3);
 
 	let newSelection = document.getSelection();
-	if (   newSelection 
+	if (   newSelection
 		&& newSelection.rangeCount > 0
 		&& newSelection.getRangeAt(0).toString().length > 0)
 		expandCollapseBlocksToReveal(newSelection.anchorNode);

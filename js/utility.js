@@ -2,6 +2,43 @@
 /* author: Said Achmiz */
 /* license: MIT */
 
+/********************************************************/
+/*  Returns the string trimmed of opening/closing quotes.
+ */
+String.prototype.trimQuotes = function () {
+    return this.replace(/^["'“‘]?(.+?)["'”’]?$/, '$1');
+};
+
+/********************************************************************/
+/*  Returns true if the string begins with any of the given prefixes.
+ */
+String.prototype.startsWithAnyOf = function (prefixes) {
+    for (prefix of prefixes)
+        if (this.startsWith(prefix))
+            return true;
+    return false;
+}
+
+/******************************************************************/
+/*  Returns true if the string ends with any of the given suffixes.
+ */
+String.prototype.endsWithAnyOf = function (suffixes) {
+    for (suffix of suffixes)
+        if (this.endsWith(suffix))
+            return true;
+    return false;
+}
+
+/*******************************************************************/
+/*  Returns true if the string includes any of the given substrings.
+ */
+String.prototype.includesAnyOf = function (substrings) {
+    for (substring of substrings)
+        if (this.includes(substring))
+            return true
+    return false;
+}
+
 /******************************************************************************/
 /*  Adds an event listener to a button (or other clickable element), attaching
     it to both ‘click’ and ‘keyup’ events (for use with keyboard navigation).
@@ -82,6 +119,13 @@ DOMTokenList.prototype.containsAnyOf = function (tokens) {
         if (this.contains(token))
             return true;
     return false;
+}
+
+/*********************************************************************/
+/*	Workaround for Firefox weirdness, based on more Firefox weirdness.
+ */
+DocumentFragment.prototype.getSelection = function () {
+	return document.getSelection();
 }
 
 /**************************************************/
@@ -193,7 +237,12 @@ function wrapElement(element, wrapClass, wrapTagName = "DIV", useExistingWrapper
 /*****************************************************/
 /*  Wrap all elements specified by the given selector.
  */
-function wrapAll(selector, wrapClassOrFunction, wrapTagName = "DIV", container = document.body, useExistingWrappers = false, moveClasses = false) {
+function wrapAll(selector, 
+				 wrapClassOrFunction, 
+				 wrapTagName = "DIV", 
+				 container = document.body, 
+				 useExistingWrappers = false, 
+				 moveClasses = false) {
     let wrapperFunction;
     if (typeof wrapClassOrFunction == "string") {
         wrapperFunction = (element) => {
@@ -398,6 +447,17 @@ function selectElementContents(element) {
 function getSelectionAsDocument(doc = document) {
     let docFrag = new DocumentFragment();
     docFrag.append(doc.getSelection().getRangeAt(0).cloneContents());
+
+	//	Strip whitespace (remove top-level empty nodes).
+	let nodesToRemove = [ ];
+	docFrag.childNodes.forEach(node => {
+		if (isNodeEmpty(node))
+			nodesToRemove.push(node);
+	});
+	nodesToRemove.forEach(node => {
+		docFrag.removeChild(node);
+	});
+
     return docFrag;
 }
 
@@ -476,6 +536,21 @@ function fixedEncodeURIComponent(str) {
     });
 }
 
+/***************************************************/
+/*	Return the value of a GET (i.e., URL) parameter.
+	*/
+function getQueryVariable(variable) {
+	let query = window.location.search.substring(1);
+	let vars = query.split("&");
+	for (let i = 0; i < vars.length; i++) {
+		let pair = vars[i].split("=");
+		if (pair[0] == variable)
+			return pair[1];
+	}
+
+	return null;
+}
+
 /***********************************************************************/
 /*  Helper function for AJAX, by kronusaturn
     https://github.com/kronusaturn/lw2-viewer/blob/master/www/script.js
@@ -507,6 +582,8 @@ function doAjax(options) {
     let location = (options.location || document.location)
                    + ((options.params && method == "GET") ? ("?" + urlEncodeQuery(options.params)) : "");
     req.open(method, location);
+    if (options["responseType"])
+	    req.responseType = options["responseType"];
     if (options["method"] == "POST") {
         req.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
         req.send(urlEncodeQuery(options.params));

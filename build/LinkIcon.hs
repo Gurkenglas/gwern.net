@@ -290,6 +290,7 @@ linkIcon x@(Link (_,cl,attributes) _ (u, _))
  | u'' "www.tandfonline.com" = aI "T&F" "text,tri,sans" -- Taylor & Francis: their icon is a small white oil lamp on a blue background, but it's illegible as a favicon and just looks like a white blob on a blue square; since these need to be monochrome, that makes it useless. Plus I recognize 'Taylor & Francis' (sans serif, as usual for STEM publishers) more anyway, so 'T&F' is the natural tri-text icon. A possible Unicode alternative for the AMPERSAND if it is too big is 'U+FE60 ﹠ SMALL AMPERSAND'.
  | u' "omega0.xyz/omega8008/" || aU' ["/docs/statistics/bayes/1988-jaynes-maximumentropyandbayesianmethods.pdf", "www-biba.inrialpes.fr/Jaynes/cc18i.pdf"] = aI "ETJ" "text,tri,sans" -- E. T. Jaynes book/paper website
  | u' "paperswithcode.com" = aI "PwC" "text,tri,sans" -- 'Papers With Code' does have a weird '[|⏐|⏐|]' icon (supposed to be a bar graph of different performances, I guess) which would work monochrome, but I don't recognize it and I doubt anyone else would either, especially as a link icon, but 'PwC' *might* be recognizable, so we'll go with that for now.
+ | u'' "www.pewresearch.org" = aI "Pew" "text,tri" -- Pew Research Center: logo <https://en.wikipedia.org/wiki/File:Pew_Research_Center.svg>. While very cool, and worthy of a Scandinavian black death metal band, it is unrecognizable and would 'shimmer' intensely if scaled down to a link icon & would have to be recreated. So, another text icon it is. Everyone knows what "Pew" means.
 
  -- Quad-letter-square icons.
  | aU'' ["jamanetwork.com", "jama.jamanetwork.com", "archinte.jamanetwork.com"]  = aI "JAMA" "text,sans,quad" -- The Journal of the American Medical Association (JAMA)
@@ -714,7 +715,7 @@ linkIconTestUnitsText =
          , ("https://slate.com/health-and-science/2017/06/daryl-bem-proved-esp-is-real-showed-science-is-broken.html",  "S","text,sans")
          , ("https://slatestarcodex.com/2015/01/15/depression-is-not-a-proxy-for-social-dysfunction/",  "SSC","text,tri")
          , ("https://unsongbook.com/",  "\8501","text")
-         , ("/docs/fiction/2011-yvain-iliadaslawsuit.html",  "SSC","text,tri")
+         , ("/docs/fiction/poetry/2011-yvain-iliadaslawsuit.html",  "SSC","text,tri")
          , ("https://astralcodexten.substack.com/p/know-your-amphetamines",  "SSC","text,tri")
          , ("https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3774989", "SSRN", "text,quad")
          , ("https://stackoverflow.com/questions/1197575/can-scripts-be-inserted-with-innerhtml",  "stackexchange","svg")
@@ -1069,4 +1070,5 @@ linkIconTestUnitsText =
          , ("https://paperswithcode.com/method/dilated-convolution", "PwC", "text,tri,sans")
          , ("https://stability.ai/blog/stable-diffusion-public-release", "SD", "text,sans")
          , ("https://patrickcollison.com/labs", "PC", "text,sans")
+         , ("https://www.pewresearch.org/social-trends/2012/02/16/the-rise-of-intermarriage/", "Pew", "text,tri")
         ]

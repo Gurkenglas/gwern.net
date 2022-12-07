@@ -1,57 +1,6 @@
 /* author: Said Achmiz */
 /* license: MIT */
 
-/*********************************/
-/*  Events fired by transclude.js:
-
-    GW.contentDidLoad {
-            source: "transclude"
-            document:
-                The temporary wrapper element in which the transcluded content
-                is contained. (The transcluded content is unwrapped, and the
-                wrapper discarded, immediately after this event and the
-                following one [GW.contentDidInject] have fired.)
-            loadLocation:
-                The URL of the include-link.
-            baseLocation:
-                The baseLocation of the document into which the transclusion is
-                being done.
-            flags:
-                GW.contentDidLoadEventFlags.needsRewrite
-                GW.contentDidLoadEventFlags.fullWidthPossible
-                    (This flag is set only if transcluding into the main page.)
-                GW.contentDidLoadEventFlags.collapseAllowed
-                    (This flag is set only if transcluding into the main page.)
-        }
-        Fired after a transclusion, but only if the transclusion is done *after*
-        the transcluded-into document has already undergone its own rewrite
-        pass. (This will be the case often, but not always, due to caching.)
-
-    GW.contentDidInject {
-            source: "transclude"
-            document:
-                The temporary wrapper element in which the transcluded content
-                is contained. (The transcluded content is unwrapped, and the
-                wrapper discarded, immediately after this event has fired.)
-        }
-        Fired immediately after the previous event [GW.contentDidLoad], but only
-        if that event’s `needsRewrite` flag is set.
-
-    Rewrite.contentDidChange {
-            source: "transclude"
-            baseLocation:
-                The baseLocation of the document into which the transclusion was
-                done.
-            document:
-                The document into which the transclusion was done (either the
-                window’s `document` object, or a DocumentFragment, or a shadow
-                root).
-        }
-        Fired after transclusion has occurred and all unwrapping and cleanup has
-        taken place, but only if the GW.contentDidLoad event’s `needsRewrite`
-        flag is set (see above).
- */
-
 /****************/
 /* TRANSCLUSION */
 /****************/
@@ -176,9 +125,13 @@
         DIV element, which will be given the ID of the include-link. When the
         `include-identify-not` option is used, this will not be done.
 
+	include-spinner
     include-spinner-not
-        Hides the “loading spinner” that is normally shown at the site of the
-        include-link while content to be transcluded is being retrieved.
+        Shows or hides the “loading spinner” that is shown at the site of the 
+        include-link while content to be transcluded is being retrieved. In the
+        absence of either of these classes, the spinner will be shown or not,
+        depending on context. Using either class causes the spinner to be shown
+        or not shown (respectively), unconditionally.
 
 
     III. ADVANCED
@@ -225,16 +178,17 @@
     element, or if they are the same), then the transcluded content is empty.
  */
 
-/*****************************************************************************/
-/*	Extract template data from an HTML string by looking for elements with the 
-	`data-template-field` attribute.
+/******************************************************************************/
+/*	Extract template data from an HTML string by looking for elements with  
+	either the `data-template-field` or the `data-template-fields` attribute.
 
-	If the value of the attribute contains no colons (the ‘:’ character), then
-	the entire attribute value is the data field name; the .innerHTML of the 
+	If the `data-template-fields` attribute is not present but the 
+	`data-template-field` attribute is present, then the value of the latter
+	attribute is treated as the data field name; the .innerHTML of the 
 	element is the field value.
 
-	If the value of the attribute contains at least one colon, then the 
-	attribute value is treated as a comma-separated list of 
+	If the `data-template-fields` attribute is present, then the attribute 
+	value is treated as a comma-separated list of 
 	`fieldName:fieldValueIdentifier` pairs. For each pair, the part before the
 	colon (the fieldName) is the data field name. The part after the colon
 	(the fieldValueIdentifier) can be interpreted in one of two ways:
@@ -243,9 +197,19 @@
 	then the rest of the identifier (after the dollar sign) is treated as the 
 	name of the attribute of the given element which holds the field value.
 
+	If the fieldValueIdentifier is _only_ the ‘$’ character, then the field 
+	value will be the value of the data attribute that corresponds to the 
+	field name (i.e., if the field is `fooBar`, then the field value will be
+	taken from attribute `data-foo-bar`).
+
 	If the fieldValueIdentifier begins with a period (the ‘.’ character), then
 	the rest of the identifier (after the period) is treated as the name of the
 	DOM object property of the given element which holds the field value.
+
+	If the fieldValueIdentifier is _only_ the ‘.’ character, then the field 
+	value will be the value of the element property matching the field name
+	(i.e., if the field name is `fooBar`, then the field value will be the 
+	value of the element’s .fooBar property).
 
 	Examples:
 
@@ -270,17 +234,22 @@
 function templateDataFromHTML(html) {
 	let dataObject = { };
 
-	newDocument(html).querySelectorAll("[data-template-field]").forEach(element => {
-		if (element.dataset.templateField.includes(":")) {
-			element.dataset.templateField.split(",").forEach(templateField => {
+	newDocument(html).querySelectorAll("[data-template-field], [data-template-fields]").forEach(element => {
+		if (element.dataset.templateFields) {
+			element.dataset.templateFields.split(",").forEach(templateField => {
 				let [ beforeColon, afterColon ] = templateField.trim().split(":");
 				let fieldName = beforeColon.trim();
 				let fieldValueIdentifier = afterColon.trim();
 
-				if (fieldValueIdentifier.startsWith("."))
-					dataObject[fieldName] = element[fieldValueIdentifier.slice(1)]
-				else if (fieldValueIdentifier.startsWith("$"))
-					dataObject[fieldName] = element.getAttribute(fieldValueIdentifier.slice(1));
+				if (fieldValueIdentifier.startsWith(".")) {
+					dataObject[fieldName] = fieldValueIdentifier == "."
+											? element[fieldName]
+											: element[fieldValueIdentifier.slice(1)];
+				} else if (fieldValueIdentifier.startsWith("$")) {
+					dataObject[fieldName] = fieldValueIdentifier == "$"
+											? element.dataset[fieldName]
+											: element.getAttribute(fieldValueIdentifier.slice(1));
+				}
 			});
 		} else {
 			dataObject[element.dataset.templateField] = element.innerHTML;
@@ -368,6 +337,9 @@ function evaluateTemplateExpression(expr, valueFunction = (() => null)) {
 		preserveSurroundingWhitespaceInConditionals (false)
 			If true, `<[IF foo]> bar <[IFEND]>` becomes ` bar `; 
 			if false, `bar`.
+
+		fireContentLoadEvent (false)
+			If true, a GW.contentDidLoad event is fired on the filled template.
  */
 //	(string, string|object, object) => DocumentFragment
 function fillTemplate (template, data = null, context = null, options = { }) {
@@ -432,7 +404,37 @@ function fillTemplate (template, data = null, context = null, options = { }) {
 		(match, fieldName) => (valueFunction(fieldName) ?? "")
 	);
 
-	return newDocument(filledTemplate);
+	let outputDocument = newDocument(filledTemplate);
+
+	if (options.fireContentLoadEvent) {
+		let loadEventInfo = {
+            container: outputDocument,
+            document: outputDocument
+        };
+
+		if (context.loadEventInfo)
+			for ([key, value] of Object.entries(context.loadEventInfo))
+				if ([ "container", "document" ].includes(key) == false)
+					loadEventInfo[key] = value;
+
+		GW.notificationCenter.fireEvent("GW.contentDidLoad", loadEventInfo);
+	}
+
+	return outputDocument;
+}
+
+/*************************************************************************/
+/*	Return appropriate loadLocation for given include-link. (May be null.)
+ */
+function loadLocationForIncludeLink(includeLink) {
+    if (Transclude.isAnnotationTransclude(includeLink) == false) {
+    	contentSourceURLs = Content.sourceURLsForTarget(includeLink);
+    	return contentSourceURLs
+			   ? contentSourceURLs.first
+			   : includeLink.eventInfo.loadLocation;
+    } else {
+    	return null;
+    }
 }
 
 /***********************************************************************/
@@ -442,22 +444,37 @@ function fillTemplate (template, data = null, context = null, options = { }) {
 function includeContent(includeLink, content) {
     GWLog("includeContent", "transclude.js", 2);
 
-    //  Just in case, do nothing if the link isn’t attached to anything.
-    if (includeLink.parentNode == null)
-        return;
-
-    //  Prevent race condition, part I.
-    includeLink.classList.add("include-in-progress");
-
-    //  Document into which the transclusion is being done.
-    let containingDocument = includeLink.loadEventInfo.document;
-
 	//	Where to inject?
     let replaceContainer = (   includeLink.parentElement != null
                             && includeLink.classList.contains("include-replace-container"));
     let insertWhere = replaceContainer
                       ? includeLink.parentElement
                       : includeLink;
+
+	/*  We don’t retry failed loads. We also skip include-links for which a
+		transclude operation is already in progress or has completed (which
+		might happen if we’re given an include-link to process, but that
+		link has already been replaced by its transcluded content and has
+		been removed from the document).
+	 */
+	if (includeLink.classList.containsAnyOf([
+		"include-loading-failed",
+		"include-in-progress",
+		"include-complete"
+	])) return;
+
+    /*  Just in case, do nothing if the element-to-be-replaced (either the 
+    	include-link itself, or its container, as appropriate) isn’t attached 
+    	to anything.
+     */
+    if (insertWhere.parentNode == null)
+        return;
+
+    //  Prevent race condition, part I.
+    includeLink.classList.add("include-in-progress");
+
+    //  Document into which the transclusion is being done.
+    let containingDocument = includeLink.eventInfo.document;
 
     //  Save reference for potential removal later.
     let includeLinkParentElement = includeLink.parentElement;
@@ -478,66 +495,43 @@ function includeContent(includeLink, content) {
     //  Inject wrapper.
     insertWhere.parentNode.insertBefore(wrapper, insertWhere);
 
-    //  Delete footnotes section, if any.
-    let newContentFootnotesSection = wrapper.querySelector("#footnotes");
-    if (newContentFootnotesSection)
-        newContentFootnotesSection.remove();
+    //  Delete footnotes section, if any, when transcluding into a full page.
+	let newContentFootnotesSection = wrapper.querySelector("#footnotes");
+    if (   newContentFootnotesSection
+    	&& containingDocument.querySelector("#page-metadata") != null)
+		newContentFootnotesSection.remove();
 
     //  ID transplantation.
     if (   includeLink.id > ""
         && includeLink.classList.contains("include-identify-not") == false
         && wrapper.querySelector("#" + includeLink.id) == null) {
         let idBearerBlock = newElement("DIV", { "id": includeLink.id, "class": "include-wrapper-block" });
-        idBearerBlock.append(...(wrapper.childNodes));
+        idBearerBlock.append(...wrapper.childNodes);
         wrapper.append(idBearerBlock);
     }
 
-    //  Fire events, if need be.
-    if (includeLink.needsRewrite) {
-        let flags = (  GW.contentDidLoadEventFlags.needsRewrite
-                	 | GW.contentDidLoadEventFlags.collapseAllowed);
-        if (containingDocument == document)
-            flags |= GW.contentDidLoadEventFlags.fullWidthPossible;
-
-        GW.notificationCenter.fireEvent("GW.contentDidLoad", {
-            source: "transclude",
-            container: wrapper,
-            document: containingDocument,
-            contentType: (Transclude.isAnnotationTransclude(includeLink) ? "annotation" : null),
-            includeLink: includeLink,
-            loadLocation: new URL(includeLink.href),
-            baseLocation: includeLink.loadEventInfo.baseLocation,
-            flags: flags
-        });
-
-        GW.notificationCenter.fireEvent("GW.contentDidInject", {
-            source: "transclude",
-            container: wrapper,
-            document: containingDocument
-        });
-    } else {
-    	/*	NOTE: Only needed because we don’t update the source document cache
-    		when we transclude into included content.
-    	 */
-        let flags = GW.contentDidLoadEventFlags.collapseAllowed;
-        if (containingDocument == document)
-            flags |= GW.contentDidLoadEventFlags.fullWidthPossible;
-
-    	GW.contentLoadHandlers.handleTranscludes({
-    		container: wrapper,
-    		document: containingDocument,
-    		baseLocation: includeLink.loadEventInfo.baseLocation,
-			flags: flags
-    	});
-    }
+    //  Fire GW.contentDidInject event.
+	let flags = GW.contentDidInjectEventFlags.clickable;
+	if (containingDocument == document)
+		flags |= GW.contentDidInjectEventFlags.fullWidthPossible;
+	GW.notificationCenter.fireEvent("GW.contentDidInject", {
+		source: "transclude",
+		contentType: (Transclude.isAnnotationTransclude(includeLink) ? "annotation" : null),
+		container: wrapper,
+		document: containingDocument,
+		loadLocation: loadLocationForIncludeLink(includeLink),
+		flags: flags,
+		includeLink: includeLink
+	});
 
 	//	WITHIN-WRAPPER MODIFICATIONS END; OTHER MODIFICATIONS BEGIN
 
-    //  Update footnotes, if need be.
-    if (Transclude.isAnnotationTransclude(includeLink) == false)
+    //  Update footnotes, if need be, when transcluding into a full page.
+    if (   containingDocument.querySelector("#page-metadata") != null
+    	&& Transclude.isAnnotationTransclude(includeLink) == false)
         updateFootnotesAfterInclusion(includeLink, wrapper, newContentFootnotesSection);
 
-    //  Update TOC, if need be.
+    //  Update TOC, if need be, when transcluding into the base page.
     if (   containingDocument == document
     	&& Transclude.isAnnotationTransclude(includeLink) == false)
         updatePageTOC(wrapper, true);
@@ -560,7 +554,7 @@ function includeContent(includeLink, content) {
 
         //  Special handling for annotation transcludes in link bibliographies.
         if (   wrapper.parentElement != null
-        	&& wrapper.parentElement.closest("#link-bibliography, .link-bibliography-append") != null)
+        	&& wrapper.parentElement.closest(".link-bibliography-list") != null)
             allowedParentTags.push("LI");
 
         while (   wrapper.parentElement != null
@@ -610,10 +604,9 @@ function includeContent(includeLink, content) {
     includeLink.classList.remove("include-in-progress");
 
     //  Fire event, if need be.
-    if (includeLink.needsRewrite) {
+    if (includeLink.delayed) {
         GW.notificationCenter.fireEvent("Rewrite.contentDidChange", {
             source: "transclude",
-            baseLocation: includeLink.loadEventInfo.baseLocation,
             document: containingDocument
         });
     }
@@ -632,8 +625,9 @@ function updateFootnotesAfterInclusion(includeLink, newContent, newContentFootno
 		source page, attempt to get the footnotes section from the cached full 
 		document that the new content was sliced from.
 	 */
-    if (newContentFootnotesSection == null) {
-    	let newContentSourceDocument = Transclude.cachedDocumentForLink(includeLink);
+    if (   newContentFootnotesSection == null
+    	&& Transclude.isAnnotationTransclude(includeLink) == false) {
+    	let newContentSourceDocument = Content.cachedDocumentForLink(includeLink);
     	if (newContentSourceDocument)
     		newContentFootnotesSection = newContentSourceDocument.querySelector("#footnotes");
     }
@@ -643,7 +637,7 @@ function updateFootnotesAfterInclusion(includeLink, newContent, newContentFootno
         || newContentFootnotesSection == null)
         return null;
 
-    let containingDocument = includeLink.loadEventInfo.document;
+    let containingDocument = includeLink.eventInfo.document;
 
     let footnotesSection = containingDocument.querySelector(".markdownBody > #footnotes");
     if (!footnotesSection) {
@@ -660,15 +654,18 @@ function updateFootnotesAfterInclusion(includeLink, newContent, newContentFootno
         let markdownBody = (containingDocument.querySelector("#markdownBody") ?? containingDocument.querySelector(".markdownBody"));
         markdownBody.append(footnotesSectionWrapper);
 
-        //  Fire event to trigger rewrite pass.
+        //  Fire events.
         GW.notificationCenter.fireEvent("GW.contentDidLoad", {
             source: "transclude.footnotesSection",
             container: footnotesSectionWrapper,
-            document: containingDocument,
-            loadLocation: new URL(includeLink.href),
-            baseLocation: includeLink.loadEventInfo.baseLocation,
-            flags: GW.contentDidLoadEventFlags.needsRewrite
+            document: containingDocument
         });
+		GW.notificationCenter.fireEvent("GW.contentDidInject", {
+			source: "transclude.footnotesSection",
+			container: footnotesSectionWrapper,
+			document: containingDocument,
+            flags: 0
+		});
 
         //  Update page TOC to add footnotes section entry.
         updatePageTOC(footnotesSectionWrapper, true);
@@ -692,36 +689,13 @@ function updateFootnotesAfterInclusion(includeLink, newContent, newContentFootno
 	//	Inject wrapper.
     footnotesSection.appendChild(newFootnotesWrapper);
 
-	//	Fire load event.
-    if (includeLink.needsRewrite) {
-        let flags = (  GW.contentDidLoadEventFlags.needsRewrite
-                	 | GW.contentDidLoadEventFlags.collapseAllowed);
-        if (containingDocument == document)
-            flags |= GW.contentDidLoadEventFlags.fullWidthPossible;
-
-		GW.notificationCenter.fireEvent("GW.contentDidLoad", {
-			source: "transclude.footnotes",
-			container: newFootnotesWrapper,
-			document: containingDocument,
-			loadLocation: new URL(includeLink.href),
-			baseLocation: includeLink.loadEventInfo.baseLocation,
-			flags: flags
-		});
-	} else {
-    	/*	NOTE: Only needed because we don’t update the source document cache
-    		when we transclude into included content.
-    	 */
-        let flags = GW.contentDidLoadEventFlags.collapseAllowed;
-        if (containingDocument == document)
-            flags |= GW.contentDidLoadEventFlags.fullWidthPossible;
-
-		GW.contentLoadHandlers.handleTranscludes({
-			container: newFootnotesWrapper,
-			document: containingDocument,
-			baseLocation: includeLink.loadEventInfo.baseLocation,
-			flags: flags
-		});
-	}
+	//	Fire GW.contentDidLoad event.
+	GW.notificationCenter.fireEvent("GW.contentDidLoad", {
+		source: "transclude.footnotes",
+		container: newFootnotesWrapper,
+		document: containingDocument,
+		loadLocation: loadLocationForIncludeLink(includeLink)
+	});
 
 	//	Parent element of footnotes.
 	let footnotesList = footnotesSection.querySelector("ol");
@@ -743,13 +717,16 @@ function updateFootnotesAfterInclusion(includeLink, newContent, newContentFootno
 	});
 
 	//	Fire inject event.
-    if (includeLink.needsRewrite) {
-		GW.notificationCenter.fireEvent("GW.contentDidInject", {
-			source: "transclude.footnotes",
-			container: newFootnotesWrapper,
-			document: containingDocument
-		});
-	}
+	let flags = GW.contentDidInjectEventFlags.clickable;
+	if (containingDocument == document)
+		flags |= GW.contentDidInjectEventFlags.fullWidthPossible;
+	GW.notificationCenter.fireEvent("GW.contentDidInject", {
+		source: "transclude.footnotes",
+		container: newFootnotesWrapper,
+		document: containingDocument,
+		loadLocation: loadLocationForIncludeLink(includeLink),
+		flags: flags
+	});
 
 	//	Merge and unwrap (redux).
 	footnotesList.append(...(newFootnotesWrapper.children));
@@ -775,13 +752,10 @@ Transclude = {
         "include-unwrap",
         "include-block-context",
         "include-replace-container",
-        "include-identify-not",
-        "include-spinner-not"
+        "include-identify-not"
     ],
 
     transcludeAnnotationsByDefault: true,
-
-    permittedContentTypes: [ "text/html" ],
 
     lazyLoadViewportMargin: "100%",
 
@@ -811,42 +785,6 @@ Transclude = {
 		return (Annotations.isAnnotatedLinkFull(includeLink));
 	},
 
-    /***********/
-    /*  Caching.
-     */
-
-    cachedDocuments: { },
-
-    //  Called by: Transclude.transclude
-    cachedDocumentForLink: (includeLink) => {
-        if (   includeLink.hostname == location.hostname
-            && includeLink.pathname == location.pathname)
-            return document;
-
-        return Transclude.cachedDocuments[urlSansHash(includeLink).href];
-    },
-
-    //  Called by: Transclude.transclude
-    setCachedDocumentForLink: (documentToCache, includeLink) => {
-        if (  includeLink.hostname == location.hostname
-            && includeLink.pathname == location.pathname)
-            return;
-
-        Transclude.cachedDocuments[urlSansHash(includeLink).href] = documentToCache;
-    },
-
-    cachedContent: { },
-
-    //  Called by: Transclude.transclude
-    cachedContentForLink: (includeLink) => {
-        return Transclude.cachedContent[includeLink.href];
-    },
-
-    //  Called by: Transclude.transclude
-    setCachedContentForLink: (content, includeLink) => {
-        Transclude.cachedContent[includeLink.href] = content;
-    },
-
     /**************/
     /*  Templating.
      */
@@ -860,9 +798,10 @@ Transclude = {
         GWLog("Transclude.loadTemplates", "transclude.js", 1);
 
 		doAjax({
-			location: Transclude.templateDirectoryPathname + Transclude.templateListFileName,
+			location: versionedAssetURL(Transclude.templateDirectoryPathname + Transclude.templateListFileName).href,
+			responseType: "json",
 			onSuccess: (event) => {
-				let templateList = JSON.parse(event.target.responseText);
+				let templateList = event.target.response;
 				for (templateName of templateList)
 					Transclude.loadTemplateByName(templateName);
 			}
@@ -873,9 +812,10 @@ Transclude = {
         GWLog("Transclude.loadTemplateByName", "transclude.js", 2);
 
 		doAjax({
-			location: Transclude.templateDirectoryPathname + templateName + ".tmpl",
+			location: versionedAssetURL(Transclude.templateDirectoryPathname + templateName + ".tmpl").href,
+			responseType: "text",
 			onSuccess: (event) => {
-				Transclude.templates[templateName] = event.target.responseText;
+				Transclude.templates[templateName] = event.target.response;
 
 				GW.notificationCenter.fireEvent("Transclude.templateDidLoad", {
 					source: "Transclude.loadTemplateByName",
@@ -925,8 +865,8 @@ Transclude = {
 	},
 
 	//	(string, string|object, object) => DocumentFragment
-	fillTemplateNamed: (templateName, data, context) => {
-		return fillTemplate(Transclude.templates[templateName], data, context);
+	fillTemplateNamed: (templateName, data, context, options) => {
+		return fillTemplate(Transclude.templates[templateName], data, context, options);
 	},
 
     /********************************/
@@ -937,13 +877,13 @@ Transclude = {
     sliceContentFromDocument: (sourceDocument, includeLink) => {
         //  If it’s a full page, extract just the page content.
         let pageContent = sourceDocument.querySelector("#markdownBody") ?? sourceDocument.querySelector("body");
-        let content = pageContent ? newDocument(pageContent.childNodes) : sourceDocument;
+        let content = pageContent ? newDocument(pageContent.childNodes) : newDocument(sourceDocument);
 
         //  If the hash specifies part of the page, extract that.
         let anchors = includeLink.hash.match(/#[^#]*/g) ?? [ ];
         if (anchors.length == 1) {
             //  Simple element tranclude.
-            let targetElement = content.querySelector(selectorFromHash(includeLink.hash));
+            let targetElement = targetElementInDocument(includeLink, content);
             if (targetElement == null) {
             	content = newDocument();
             } else {
@@ -1098,7 +1038,7 @@ Transclude = {
     transclude: (includeLink, now = false) => {
         GWLog("Transclude.transclude", "transclude.js", 2);
 
-        /*  We don’t retry failed loads. We also skip include-links for which a
+       /*  We don’t retry failed loads. We also skip include-links for which a
             transclude operation is already in progress or has completed (which
             might happen if we’re given an include-link to process, but that
             link has already been replaced by its transcluded content and has
@@ -1109,14 +1049,6 @@ Transclude = {
             "include-in-progress",
             "include-complete"
         ])) return;
-
-		/*	If it’s an annotation transclude but doesn’t actually have an
-			annotation, do nothing. (Presumably, an annotation will be added to
-			this link someday.)
-		 */
-		if (   Transclude.isAnnotationTransclude(includeLink)
-			&& Transclude.hasAnnotation(includeLink) == false)
-			return;
 
 		/*  We exclude cross-origin transclusion for security reasons, but from
 			a technical standpoint there’s no reason it shouldn’t work. Simply
@@ -1136,7 +1068,7 @@ Transclude = {
             && isWithinCollapsedBlock(includeLink)
             && includeLink.classList.contains("include-strict") == false
             && includeLink.classList.contains("include-when-collapsed") == false) {
-            includeLink.needsRewrite = true;
+            includeLink.delayed = true;
             GW.notificationCenter.addHandlerForEvent("Collapse.collapseStateDidChange", (info) => {
                 Transclude.transclude(includeLink);
             }, { 
@@ -1150,7 +1082,7 @@ Transclude = {
         //  Transclusion is lazy by default.
         if (   now == false
             && includeLink.classList.contains("include-strict") == false) {
-            includeLink.needsRewrite = true;
+            includeLink.delayed = true;
             requestAnimationFrame(() => {
                 lazyLoadObserver(() => {
                     Transclude.transclude(includeLink, true);
@@ -1163,123 +1095,100 @@ Transclude = {
         //  Set loading state (for visual/interaction purposes).
         Transclude.setLinkStateLoading(includeLink);
 
-        /*  Check whether provider object for annotation extracts is loaded;
-            if not, then wait until it loads to attempt transclusion.
+        /*  Check whether provider object is loaded; if not, then wait until it 
+        	loads to attempt transclusion.
          */
-        if (   Transclude.isAnnotationTransclude(includeLink)
-            && window.Annotations == null) {
-            includeLink.needsRewrite = true;
-            GW.notificationCenter.addHandlerForEvent("Annotations.didLoad", (info) => {
-                Transclude.transclude(includeLink, true);
-            }, { once: true });
+        let providerObjectName = Transclude.isAnnotationTransclude(includeLink)
+        						 ? "Annotations"
+        						 : "Content";
+        if (window[providerObjectName] == null) {
+			includeLink.delayed = true;
+			GW.notificationCenter.addHandlerForEvent(`${providerObjectName}.didLoad`, (info) => {
+				Transclude.transclude(includeLink, true);
+			}, { once: true });
 
-            return;
+			return;
         }
 
-        //  Check includable content cache (managed by Transclude in all cases).
-        let cachedContent = Transclude.cachedContentForLink(includeLink);
-        if (cachedContent) {
-            let content = newDocument(cachedContent);
+		//	Get data provider object and data identifier.
+		let provider = window[providerObjectName];
+		let identifier = provider.targetIdentifier(includeLink);
 
-            if (Transclude.isAnnotationTransclude(includeLink)) {
-                includeLink.needsRewrite = true;
-                requestAnimationFrame(() => {
-                    includeContent(includeLink, content);
-                });
-            } else {
-                includeContent(includeLink, content);
-            }
+		//	Request data load, if need be.
+		if (provider.cachedDataExists(identifier) == false) {
+			provider.load(identifier);
+	        includeLink.delayed = true;
+		}
 
-            return;
-        }
+		//	When data loads (or if it is already loaded), transclude.
+		provider.waitForDataLoad(identifier, 
+		   (identifier) => {
+		   	//	Load success handler.
 
-        //  Check source document caches (depending on include type).
-        if (Transclude.isAnnotationTransclude(includeLink)) {
-            //  Get annotation reference data (if it’s been loaded).
-            let referenceData = Annotations.referenceDataForTarget(includeLink);
-            if (referenceData == "LOADING_FAILED") {
-                /*  If we’ve already tried and failed to load the annotation, we
-                    will not try loading again, and just show a “loading failed”
-                    message.
-                 */
-                Transclude.setLinkStateLoadingFailed(includeLink);
+			if (Transclude.isAnnotationTransclude(includeLink)) {
+				let referenceData = Annotations.referenceDataForTarget(includeLink);
 
-                return;
-            } else if (referenceData) {
-            	let templateName = (includeLink.dataset.template || referenceData.template);
-
+				let templateName = (includeLink.dataset.template || referenceData.template);
+				let linkTemplateData = templateDataFromHTML(includeLink.outerHTML);
+				let context = {
+					loadEventInfo: {
+						source: "transclude",
+						contentType: "annotation",
+						includeLink: includeLink
+					}
+				};
+				for ([key, value] of Object.entries(linkTemplateData)) {
+					context[key] = value;
+				}
+				let options = {
+					fireContentLoadEvent: true
+				};
 				Transclude.doWhenTemplateLoaded(templateName, (delayed) => {
-					if (delayed)
-						includeLink.needsRewrite = true;
+					let content = Transclude.fillTemplateNamed(templateName, referenceData, context, options);
 
-					Transclude.setCachedContentForLink(Transclude.fillTemplateNamed(templateName, referenceData),
-													   includeLink);
-
-					if (Transclude.cachedContentForLink(includeLink) == null) {
+					if (content == null) {
 						Transclude.setLinkStateLoadingFailed(includeLink);
 
 						//	Send request to record failure in server logs.
-						GWServerLogError(includeLink.href + `--annotation-transclude-failed`, "failed annotation transclude");
+						GWServerLogError(includeLink.href + `--annotation-transclude-template-fill-failed`, 
+										 "failed annotation transclude template fill");
 					} else {
-						Transclude.transclude(includeLink, true);
+						includeLink.delayed = true;
+						requestAnimationFrame(() => {
+							includeContent(includeLink, content);
+						});
 					}
 				}, (delayed) => {
 					Transclude.setLinkStateLoadingFailed(includeLink);
 
 					//	Send request to record failure in server logs.
-					GWServerLogError(templateName + `--include-template-load-failed`, "failed include template load");
+					GWServerLogError(templateName + `--include-template-load-failed`, 
+									 "failed include template load");
 				});
 
 				return;
-            }
-        } else {
-            let cachedDocument = Transclude.cachedDocumentForLink(includeLink);
-            if (cachedDocument) {
-                Transclude.setCachedContentForLink(Transclude.sliceContentFromDocument(cachedDocument, includeLink), includeLink);
-                Transclude.transclude(includeLink, true);
+			} else {
+				let cachedDocument = Content.cachedDocumentForLink(includeLink);
+				let content = Transclude.sliceContentFromDocument(cachedDocument, includeLink);
+				includeContent(includeLink, content);
 
-                return;
-            }
-        }
+				return;
+			}
+		}, (identifier) => {
+		   	//	Load fail handler.
 
-        //  No cached documents or content; time for a network load.
-        includeLink.needsRewrite = true;
-        if (Transclude.isAnnotationTransclude(includeLink)) {
-            let annotationIdentifier = Annotations.targetIdentifier(includeLink);
+			/*  If we’ve already tried and failed to load the content, we
+				will not try loading again, and just show a “loading failed”
+				message.
+			 */
+			Transclude.setLinkStateLoadingFailed(includeLink);
 
-            //  Request annotation load.
-            Annotations.loadAnnotation(annotationIdentifier, (identifier) => {
-            	//	Load success handler.
-                Transclude.transclude(includeLink, true);
-            }, (identifier) => {
-				//	Load fail handler.
-                Transclude.setLinkStateLoadingFailed(includeLink);
+			//  Send request to record failure in server logs.
+			GWServerLogError(includeLink.href + `--transclude-failed`, 
+							 "failed transclude");
 
-                //  Send request to record failure in server logs.
-                GWServerLogError(includeLink.href + `--annotation-transclude-failed`, "failed annotation transclude");
-            });
-        } else {
-            doAjax({
-                location: includeLink.href,
-                onSuccess: (event) => {
-                    let contentType = event.target.getResponseHeader("Content-Type").match(/(.+?)(?:;|$)/)[1];
-                    if (Transclude.permittedContentTypes.includes(contentType) == false) {
-                        Transclude.setLinkStateLoadingFailed(includeLink);
-
-	                	//	Send request to record failure in server logs.
-                        GWServerLogError(includeLink.href + `--transclude-bad-content-type`, "bad transclude content type");
-
-                        return;
-                    }
-
-                    Transclude.setCachedDocumentForLink(newDocument(event.target.responseText), includeLink);
-                    Transclude.transclude(includeLink, true);
-                },
-                onFailure: (event) => {
-                    Transclude.setLinkStateLoadingFailed(includeLink);
-                }
-            });
-        }
+			return;
+		});
     },
 
     /*****************/
@@ -1302,9 +1211,20 @@ Transclude = {
         if (Transclude.isIncludeLink(link) == false)
             return;
 
+		if (link.classList.containsAnyOf([ "include-spinner", "include-spinner-not" ]) == false) {
+			/*	Add loading spinner for whole-page transcludes and anything
+				within a link bibliography.
+			 */
+			if (   link.hash == ""
+				|| link.closest(".link-bibliography-list-list") != null)
+				link.classList.add("include-spinner");
+		}
+
         link.classList.add("include-loading");
-        if (link.textContent > "")
+        if (   link.classList.contains("include-spinner")
+        	&& link.textContent > "")
             link.classList.add("icon-not");
+
         link.onclick = () => { return false; };
         link.savedTitle = link.title ?? "";
         link.title = "Content is loading. Please wait.";
@@ -1325,11 +1245,10 @@ Transclude = {
         }
 
         //  Fire event, if need be.
-        if (link.needsRewrite) {
+        if (link.delayed) {
             GW.notificationCenter.fireEvent("Rewrite.contentDidChange", {
                 source: "transclude.loadingFailed",
-                baseLocation: link.loadEventInfo.baseLocation,
-                document: link.loadEventInfo.document
+                document: link.eventInfo.document
             });
         }
     }
@@ -1343,20 +1262,19 @@ Transclude.loadTemplates();
 /****************************/
 /*  Process transclude-links.
  */
-addContentLoadHandler(GW.contentLoadHandlers.handleTranscludes = (loadEventInfo) => {
+addContentLoadHandler(GW.contentLoadHandlers.handleTranscludes = (eventInfo) => {
     GWLog("handleTranscludes", "transclude.js", 1);
 
-    Transclude.allIncludeLinksInContainer(loadEventInfo.container).forEach(includeLink => {
-		//	Store a reference to the included-into document.
-		includeLink.loadEventInfo = loadEventInfo;
-
-		/*	If we’re not rewriting the containing loaded content, then the
-			included content will need rewriting.
-		 */
-		if (loadEventInfo.needsRewrite == false)
-			includeLink.needsRewrite = true;
+    Transclude.allIncludeLinksInContainer(eventInfo.container).forEach(includeLink => {
+		//	Store a reference to the load event info.
+		includeLink.eventInfo = eventInfo;
 
         //  Transclude now or maybe later.
         Transclude.transclude(includeLink);
     });
-}, "<rewrite");
+}, "transclude");
+
+/*************************************************************/
+/*	Re-process when injecting. (Necessary for cloned content.)
+ */
+addContentInjectHandler(GW.contentInjectHandlers.handleTranscludes = GW.contentLoadHandlers.handleTranscludes, "rewrite");
